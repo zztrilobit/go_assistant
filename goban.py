@@ -21,6 +21,7 @@ class go_board:
         self.goban = Canvas(self.root_widg,width=self.gobansize,height=self.gobansize,bg="#eebb77")
         self.useHintCallback = lambda  :  1==0
         self.showInfoCallback =  lambda i : 1
+        self.hintRithm="y"
         
     def newGame(self) :
         self.stones_figs["black"]=[]
@@ -33,6 +34,8 @@ class go_board:
             self.drawListStones("black", self.engine.list_stones("black"))
             # и передадим ход белым
             self.move_pass()
+        
+        
         
     def top_move(self) : 
         if (len(self.undo_stack)>0) :
@@ -57,6 +60,18 @@ class go_board:
         self.drawListStones("black", self.engine.list_stones("black"))
         self.drawListStones("white", self.engine.list_stones("white"))
     
+    def showHint(self):
+        if len(self.hintRithm)>0 :
+            ch=self.hintRithm[0]
+            self.hintRithm=self.hintRithm[1:len(self.hintRithm)]+ch
+            doHint=ch=="y"
+        else:
+            doHint=self.useHintCallback()
+        if doHint:
+            hint=self.engine.genmove("black")
+            self.engine.undo()
+            self.top_move()["hint"]=hint
+            
     def gobanClicker(self, s) : 
         self.engine.play("black",s)
         mv_info={}
@@ -67,10 +82,9 @@ class go_board:
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
         self.showInfoCallback("White moved "+wh)
-        if (self.useHintCallback()) : 
-            hint=self.engine.genmove("black")
-            self.engine.undo()
-            mv_info["hint"]=hint
+        
+        self.showHint() 
+
         self.redrawStones()
     
     def undo(self):
@@ -98,6 +112,7 @@ class go_board:
         self.undo_stack.append(mv_info)
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
+        self.showHint()
         self.redrawStones()
         
     # функциональная обертка для клика по гобану
@@ -125,7 +140,9 @@ class go_board:
             newList.append(self.goban.create_oval(c[0]+d,c[1]+d,c[2]-d,c[3]-d,fill=ocolor, outline=ocolor))
         # рисуем подсказку
         if (color=="black" and mw.has_key("hint") ):
+            print mw
             if mw["hint"]<>"PASS":
+                print mw["hint"]
                 c=self.coords_by_names[mw["hint"]]
                 newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3], outline="red"))
 
@@ -251,7 +268,13 @@ class gameInterface :
         #чек бокс подсказки хода
         self.makeHint=IntVar()
         self.cbHint=Checkbutton(self.buttonFrame,variable=self.makeHint,text="Make hint")
-        self.cbHint.pack()
+        self.cbHint.pack(side="top", padx=5, pady=5)
+
+        self.hintRithm=StringVar()
+        self.hintRithm.set("y")
+        self.entHintRithm=Entry(self.buttonFrame,textvariable=self.hintRithm)
+        self.entHintRithm.pack(side="top", padx=5, pady=5)
+        
         self.goban.useHintCallback=lambda  : self.makeHint.get() == 1 
         self.goban.newGame()
         self.btnScore=self.newBtn_1("Calc score", lambda _ : self.score() )
@@ -274,7 +297,9 @@ class gameInterface :
         self.engine.clear_board()
         
         self.goban.boardsize=self.boardsize 
-        self.goban.linedist=self.linedist        
+        self.goban.linedist=self.linedist
+
+        self.goban.hintRithm=self.hintRithm.get()
         self.goban.drawBoard()
         h=self.handicap.get()
         if h<>"" :
