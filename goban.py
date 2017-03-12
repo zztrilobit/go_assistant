@@ -23,18 +23,51 @@ class go_board:
         self.showInfoCallback =  lambda i : 1
         self.hintRithm="y"
         
+        self.for_sgf=[]
+    
+    # приведение координатных обозначений GTP->SGF
+    def toSGF(self,s):
+        return (""+s[0]+self.xToLetter(int(s[1:])-1)).lower()
+        
     def newGame(self) :
         self.stones_figs["black"]=[]
         self.stones_figs["white"]=[]
-        self.undo_stack=[]  # Стэк для отката ходов
         self.drawBoard()
+        sgf=";AP[GO_ASSISTENT:0.0.1]"
+        sgf=sgf+"FF[4]GM[1]" #формат 4 игра го
+        sgf=sgf+"SZ["+str(self.boardsize)+"]KM[0.0]" #размер доски и коми
         
         if self.handicap<>"" :
             # нарисуем камни гандикапа
-            self.drawListStones("black", self.engine.list_stones("black"))
+            self.engine.handicap(h)
+            blacklist=self.engine.list_stones("black")
+            sgf=sgf+"PL[W]RU[Japanese]"#играют белые, правила японские
+            sgf=sgf+"HA["+str(self.handicap)+"]"+"AB"# дальше список позиций камней гандикапа[dd][jd][gg][dj][jj]"
+            for i in blacklist :
+                sgf=sgf+"["+self.toSGF(i)+"]"
             # и передадим ход белым
-            self.move_pass()
+        else:
+            sgf=sgf+"PL[B]RU[Japanese]"
         
+        #может еще чего приписываем в SGF
+        #sgf=sgf+"DT[2015-04-06]GN[06.04.2015_18_43.sgf]"
+        
+        self.undo_stack=[]  
+        # Стэк для отката ходов закинем пустой ход для showHint
+        u={}
+        u["black"]="PASS"
+        u["white"]="PASS"
+        self.undo_stack.append(u)
+            
+        if self.handicap<>"":
+            #делаем первый ход за белых
+            wh=self.engine.genmove("white")
+            sgf=sgf+";W["+self.toSGF(wh)+"]"
+        self.for_sgf=[]
+        self.for_sgf.append(sgf)
+        
+        self.showHint()
+        self.redrawStones()
         
         
     def top_move(self) : 
@@ -50,11 +83,6 @@ class go_board:
         self.gobansize = self.linedist * (self.boardsize + 1) #размер доски
         self.goban.config(width=self.gobansize,height=self.gobansize)
         
-    def  xToLetter (self, x):
-        return ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T'][x]
-      
-    def createFieldname (self, x, y):
-        return ""+self.xToLetter(x)+str(y + 1)
     
     def redrawStones(self):
         self.drawListStones("black", self.engine.list_stones("black"))
@@ -82,13 +110,18 @@ class go_board:
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
         self.showInfoCallback("White moved "+wh)
-        
         self.showHint() 
-
         self.redrawStones()
+        if wh<>"PASS":
+            sgf=";B["+self.toSGF(s)+"];W["+self.toSGF(wh)+"]"
+        else:
+            sgf=";B["+self.toSGF(s)+"];W[]"
+        self.for_sgf.append(sgf)
     
     def undo(self):
         oldm=self.undo_stack.pop()
+        self.for_sgf.pop()
+        #todo тут бы еще реду стэк организовать и и для сгф тоже, дабы создавать ветки партий
         if (oldm["black"]<>"PASS") : self.engine.undo()
         if (oldm["white"]<>"PASS") : self.engine.undo()
         self.redrawStones()
@@ -104,7 +137,9 @@ class go_board:
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
         self.redrawStones()
-
+        sgf=";B["+self.toSGF(s)+"];W["+self.toSGF(wh)+"]"
+        self.for_sgf.append[sgf]
+    
     #черные спасовали
     def move_pass(self):
         mv_info={}
@@ -112,9 +147,12 @@ class go_board:
         self.undo_stack.append(mv_info)
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
-        self.showHint()
-        self.redrawStones()
-        
+        if (wh<>"PASS") and (wh<>"RESIGN"):
+            sgf=";B[];W["+self.toSGF(wh)+"]"
+        else:
+            sgf=";B[];W["+self.toSGF(wh)+"]"
+        self.for_sgf.append[sgf]
+    
     # функциональная обертка для клика по гобану
     def makeCliker(self, s) : return lambda _: self.gobanClicker(s)
         
@@ -147,7 +185,13 @@ class go_board:
                 newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3], outline="red"))
 
         self.stones_figs[color]=newList
-        
+    
+    def  xToLetter (self, x):
+        return ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T'][x]
+    
+    def createFieldname (self, x, y):
+        return ""+self.xToLetter(x)+str(self.boardsize-y)
+    
     def drawBoard (self) : 
         self.goban.delete("all")
         max=self.boardsize * self.linedist
@@ -279,7 +323,16 @@ class gameInterface :
         self.goban.newGame()
         self.btnScore=self.newBtn_1("Calc score", lambda _ : self.score() )
         self.goban.showInfoCallback=lambda i : self.showInfo(i)
+        
+        self.btnStoreGame=self.newBtn_1("Store game", lambda _ : self.storeGame() )
     
+    #сохранение игры
+    def storeGame(self):
+        f = open('my_sgf.txt', 'w')
+        s="("+"\n".join(self.goban.for_sgf)+")"
+        f.write(s)
+        f.close()
+        
     def showInfo(self,i):
         self.lblInfo.config(text=i)
     
@@ -302,8 +355,6 @@ class gameInterface :
         self.goban.hintRithm=self.hintRithm.get()
         self.goban.drawBoard()
         h=self.handicap.get()
-        if h<>"" :
-            self.engine.handicap(h)
         self.goban.handicap=h
         self.goban.newGame()
             
