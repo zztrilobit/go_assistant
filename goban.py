@@ -3,6 +3,7 @@ from ttk import *
 from sys import exit as sysexit
 from os.path import splitext
 import os
+import pickle
 
 ############### Сама доска - холст с нарисованной сеткой, обработчиком событий клик-а 
 class go_board:
@@ -24,7 +25,7 @@ class go_board:
         self.useHintCallback = lambda  :  1==0
         self.showInfoCallback =  lambda i : 1
         self.hintRithm="y"
-        
+        # стэк в котором будет накапливаться информация для sgf-файла
         self.for_sgf=[]
         
     
@@ -43,10 +44,22 @@ class go_board:
         sgf=sgf+"FF[4]GM[1]" #формат 4 игра го
         sgf=sgf+"SZ["+str(self.boardsize)+"]KM[0.0]" #размер доски и коми
         
+        self.undo_stack=[]  
+        u={}
+        handi_info={}
+        party_info={}
+        # в первый узел добавим информацию о партии. Чтобы при восстановлении все это накатить
+        party_info["boardsize"]=self.boardsize
+        party_info["komi"]=0
+        
         if self.handicap<>"" :
             # нарисуем камни гандикапа
             self.engine.handicap(self.handicap)
+            handi_info["count"]=self.handicap
+            
             blacklist=self.engine.list_stones("black")
+            handi_info["list"]=blacklist
+
             sgf=sgf+"PL[W]RU[Japanese]"#играют белые, правила японские
             sgf=sgf+"HA["+str(self.handicap)+"]"+"AB"# дальше список позиций камней гандикапа[dd][jd][gg][dj][jj]"
             for i in blacklist :
@@ -58,19 +71,23 @@ class go_board:
         #может еще чего приписываем в SGF
         #sgf=sgf+"DT[2015-04-06]GN[06.04.2015_18_43.sgf]"
         
-        self.undo_stack=[]  
-        # Стэк для отката ходов закинем пустой ход для showHint
-        u={}
-        u["black"]="PASS"
-        u["white"]="PASS"
-        self.undo_stack.append(u)
             
         if self.handicap<>"":
             #делаем первый ход за белых
             wh=self.engine.genmove("white")
+            handi_info["white"]=wh
+            party_info["handicap"]=handi_info
             sgf=sgf+";W["+self.toSGF(wh)+"]"
-        self.for_sgf=[]
-        self.for_sgf.append(sgf)
+        else:
+            # Стэк для отката ходов закинем пустой ход для showHint
+            u["black"]="PASS"
+            u["white"]="PASS"
+        
+        #первый, неоткатываемый узел партии содержит информацию о ней, размере доски, гандикапе
+        u["party_info"]=party_info
+        #и там же в точности будем хранить фрагменты текста для SGF, будем сериализовать стек ходов в пикле или шелве
+        u["sgf"]=sgf
+        self.undo_stack.append(u)
         
         self.showHint()
         self.redrawStones()
@@ -91,6 +108,7 @@ class go_board:
         
     
     def redrawStones(self):
+        #todo может мы в дальнейшем будем хранить списки камней на стеке отката и рисовать с него, пока - с доски
         self.drawListStones("black", self.engine.list_stones("black"))
         self.drawListStones("white", self.engine.list_stones("white"))
     
@@ -106,11 +124,12 @@ class go_board:
             self.engine.undo()
             self.top_move()["hint"]=hint
             
-    def gobanClicker(self, s) : 
+    def gobanClicker(self, s) :
+        was_hint= self.top_move().has_key("hint") #Ход сделан с подсказкой
         self.engine.play("black",s)
         mv_info={}
         mv_info["black"]=s
-        mv_info["white"]=self.top_move()["white"]
+        mv_info["white"]=self.top_move()["white"] #пока  нужно это хотя по сути, камни все равно с доски
         self.undo_stack.append(mv_info)
         self.redrawStones()
         wh=self.engine.genmove("white")
@@ -118,18 +137,23 @@ class go_board:
         self.showInfoCallback("White moved "+wh)
         self.showHint() 
         self.redrawStones()
-        if wh<>"PASS":
-            sgf=";B["+self.toSGF(s)+"];W["+self.toSGF(wh)+"]"
+        sgf=";B["+self.toSGF(s)+"]"
+        if was_hint: 
+            sgf=sgf+"C[with hint]"
         else:
-            sgf=";B["+self.toSGF(s)+"];W[]"
-        self.for_sgf.append(sgf)
+            sgf=sgf+"C[without hint]"
+        if (wh<>"PASS") and (wh<>"RESIGN") :
+            sgf=sgf+";W["+self.toSGF(wh)+"]"
+        else:
+            sgf=sgf+";W[]"
+        mv_info["sgf"]=sgf
     
     def undo(self):
         oldm=self.undo_stack.pop()
-        self.for_sgf.pop()
+        
         #todo тут бы еще реду стэк организовать и и для сгф тоже, дабы создавать ветки партий
         if (oldm["black"]<>"PASS") : self.engine.undo()
-        if (oldm["white"]<>"PASS") : self.engine.undo()
+        if (oldm["white"]<>"PASS") and (oldm["white"]<>"RESIGN") : self.engine.undo()
         self.redrawStones()
         
     #сделать ход за игрока    
@@ -144,7 +168,7 @@ class go_board:
         mv_info["white"]=wh
         self.redrawStones()
         sgf=";B["+self.toSGF(s)+"];W["+self.toSGF(wh)+"]"
-        self.for_sgf.append[sgf]
+        mv_info["sgf"]=sgf
     
     #черные спасовали
     def move_pass(self):
@@ -157,7 +181,7 @@ class go_board:
             sgf=";B[];W["+self.toSGF(wh)+"]"
         else:
             sgf=";B[];W["+self.toSGF(wh)+"]"
-        self.for_sgf.append[sgf]
+        mv_info["sgf"]=sgf
     
     # функциональная обертка для клика по гобану
     def makeCliker(self, s) : return lambda _: self.gobanClicker(s)
@@ -177,6 +201,8 @@ class go_board:
         else: 
             ocolor="black"
         mw=self.top_move()
+        #todo - тут бы сделать поиск последнего непасованного камня в глубину
+        
         # помечаем последний ход маркером 
         if ((mw[color]<>"PASS") ):
             c=self.coords_by_names[mw[color]]
@@ -334,9 +360,15 @@ class gameInterface :
     
     #сохранение игры
     def storeGame(self):
+        for_sgf=[ x["sgf"] for x in self.goban.undo_stack ]
         f = open('my_sgf.txt', 'w')
-        s="("+"\n".join(self.goban.for_sgf)+")"
+        s="("+"\n".join(for_sgf)+")"
         f.write(s)
+        f.close()
+        
+        s2=pickle.dumps(self.goban.undo_stack)
+        f = open('my_picle.txt', 'w')
+        f.write(s2)
         f.close()
         
     def showInfo(self,i):
