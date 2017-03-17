@@ -4,6 +4,7 @@ from sys import exit as sysexit
 from os.path import splitext
 import os
 import pickle
+import copy
 
 ## модель игры - расчет содержимого доски после цепочки ходов
 class boardModel:
