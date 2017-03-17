@@ -5,6 +5,182 @@ from os.path import splitext
 import os
 import pickle
 
+## модель игры - расчет содержимого доски после цепочки ходов
+class boardModel:
+    def __init__(self, boardsize):
+        self.GTP_LETTERS=['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T']
+        self.board=[] # поле - двумерный массив, каждая ячейка - хэш, в к отором как минимум координаты поля - х,y и id группы куда входит поле
+        self.white_groups={} # хэш - ид группы - массив узлов узел {x: y:}
+        self.black_groups={}
+        self.groups={"black":self.black_groups, "white" : self.white_groups}
+
+        #захвачено камней
+        self.captured={"black":0 , "white" : 0}
+        self.boardsize=boardsize
+        self.id_g_new=1
+        self.verbose=False
+    
+    #пустой узел
+    def emptyNode(self,x,y):
+        res={}
+        res["x"]=x
+        res["y"]=y
+        res["state"]="empty"
+        res["id_grp"]=-1
+        return res
+        
+    #пустая доска
+    def init(self):
+        self.board=[]
+        for i in range(self.boardsize):
+            row=[]
+            for j in range(self.boardsize):
+                row.append(self.emptyNode(j,i))
+            self.board.append(row)
+        self.white_groups={} # хэш - ид группы - массив узлов узел {x: y:}
+        self.black_groups={}
+        self.groups={"black":self.black_groups, "white" : self.white_groups}
+
+    def clone(self):
+        res=boardModel(self.boardsize)
+        res.init()
+        res.board=copy.deepcopy(self.board)
+        res.white_groups=copy.deepcopy(self.white_groups)
+        res.black_groups=copy.deepcopy(self.black_groups)
+        res.groups["white"]=res.white_groups
+        res.groups["black"]=res.black_groups
+        res.id_g_new=self.id_g_new
+        return res
+    
+    #соседние узлы
+    def nearNodesXY(self,x,y): 
+        res=[]
+        for dx in [-1,1]:
+            x1=x+dx
+            if x1>=0 and x1<self.boardsize:
+                res.append({"x" : x1, "y": y})
+        for dy in [-1,1]:
+            y1=y+dy
+            if y1>=0 and y1<self.boardsize:
+                res.append({"x":x, "y":y1})
+        return res
+        
+    def nearNodesCrd(self,c): 
+        return self.nearNodesXY(c["x"],c["y"])
+    
+    def doMove(self,color,posGtp):
+        c=self.gtp2crd(posGtp)
+        stone=self.nodeByCrd(c)
+        stone["state"]=color
+        # сделаем новую группу, внесем ее в список, занесем в нее новый камень
+        self.id_g_new=self.id_g_new+1
+        new_id=self.id_g_new
+        new_group=[  {"x" : stone["x"], "y": stone["y"]}  ] #пока в новой группе 1 камень
+        groupset=self.groups[color]
+        
+        groupset[new_id]=new_group
+        
+        # и проставим у нового камня ид-шник группы
+        stone["id_grp"]=new_id
+        
+        #проверяемые соседние узлы
+        for c in self.nearNodesCrd(c):
+            node=self.nodeByCrd(c)
+            old_g=node["id_grp"]
+            if (node["state"]==color) and (old_g!=new_id):
+                # цвет соседа совпал с моим. Вольем группу соседа в мою
+                for nn in groupset[old_g]:
+                    nnn=self.nodeByCrd(nn)
+                    nnn["id_grp"]=new_id
+                    new_group.append({"x":nnn["x"],"y":nnn["y"]})
+                # и удаляем группу из списка
+                del groupset[old_g]
+                
+            ocolor=self.ocolor(color)    
+            if node["state"]==ocolor :
+                # камень другого цвета. Проверим, жива ли содержащая его группа?
+                iig=node["id_grp"]
+                ogrset=self.groups[ocolor]
+                if not self.groupAlive(ocolor,iig) :
+                    for ocr in ogrset[iig] :
+                        # на доске пометим поля как пустые
+                        onode = self.nodeByCrd(ocr) 
+                        onode["state"]="empty"
+                        onode["id_grp"]=-1
+                        self.captured[color]=self.captured[color]+1
+                    #и удалим группу из списка
+                    del ogrset[iig]
+                
+    def groupAlive(self,color,id):
+        # цикл по узлам группы
+        groupset=self.groups[color]
+        for c in groupset[id]:
+            # цикл по соседям узла
+            for cc in self.nearNodesCrd(c) :
+                node=self.nodeByCrd(cc)
+                if node["state"]=="empty": 
+                    return True
+        return False
+    
+    def ocolor(self, color): 
+        if color=="black" :
+            return "white"
+        else :
+            return "black"
+    #вернем узел с координатами     
+    def nodeByCrd(self, c): return self.board[c["y"]][c["x"]]
+
+    
+    # возвращает новую доску. для простоты отката
+    def move(self, color, posGTP):  
+        res=self.clone()
+        res.doMove(color, posGTP)
+        return res
+    
+    # возвращает список камней нужного цвета в gtp-формате
+    def list(self, color):
+        res=[]
+        for i in range(self.boardsize):
+            for j in range(self.boardsize):
+                if self.board[i][j]["state"]==color:
+                    res.append(self.toGtp(j,i))
+        return res
+
+    #индекс массива->gtp
+    def toGtp(self,x,y) : return self.GTP_LETTERS[x]+str(y+1)
+    
+    #координаты GTP -> {x: y:}
+    def gtp2crd(self,posGtp):
+        x=self.GTP_LETTERS.index(posGtp[0])
+        y=int(posGtp[1:])-1
+        return {"x":x , "y":y}
+        
+    def getNodeState(self,posGtp):
+        return self.nodeByCrd(self.gtp2crd(posGtp))["state"]
+
+    #узел пуст?
+    def isNodeEmpty(self,posGtp):
+        return self.nodeByCrd(self.gtp2crd(posGtp))["state"]=="empty"
+
+    # может ли камень дышать
+    def isNodeAlive(self,posGtp):
+        n=self.nodeByCrd(self.gtp2crd(posGtp))
+        return self.groupAlive(n["state"],n["id_grp"])
+
+    # можно ли делать этот ход
+    def movePossible(self,color,posGtp):
+        n=self.nodeByCrd(self.gtp2crd(posGtp))
+        if n["state"]<>"empty" : return False
+        nb=self.clone()
+        nb.doMove(color,posGtp)
+        #сможет ли камень после хода дышать?
+        return nb.isNodeAlive(posGtp)
+
+    # может ли камень дышать
+    def nearNodesGTP(self,posGtp):
+        n=self.nodeByCrd(self.gtp2crd(posGtp))
+        return [self.toGtp(n["x"],n["y"]) for n in self.nearNodesXY(n["x"],n["y"])]
+        
 ############### Сама доска - холст с нарисованной сеткой, обработчиком событий клик-а 
 class go_board:
     def __init__(self, root, linedist, boardsize, engine):
