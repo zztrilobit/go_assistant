@@ -229,18 +229,23 @@ class go_board:
         party_info["boardsize"]=self.boardsize
         party_info["komi"]=0
         
+        #доска
+        bm=boardModel(self.boardsize)
+        bm.init()
+        
         if self.handicap<>"" :
             # нарисуем камни гандикапа
-            self.engine.handicap(self.handicap)
+            blacklist=self.engine.handicap(self.handicap)
             handi_info["count"]=self.handicap
             
-            blacklist=self.engine.list_stones("black")
+            #blacklist=self.engine.list_stones("black")
             handi_info["list"]=blacklist
 
             sgf=sgf+"PL[W]RU[Japanese]"#играют белые, правила японские
             sgf=sgf+"HA["+str(self.handicap)+"]"+"AB"# дальше список позиций камней гандикапа[dd][jd][gg][dj][jj]"
             for i in blacklist :
                 sgf=sgf+"["+self.toSGF(i)+"]"
+                bm.doMove("black",i)
             # и передадим ход белым
         else:
             sgf=sgf+"PL[B]RU[Japanese]"
@@ -251,7 +256,10 @@ class go_board:
             
         if self.handicap<>"":
             #делаем первый ход за белых
+            u["black"]="PASS"
+            u["white"]="PASS"
             wh=self.engine.genmove("white")
+            bm.doMove("white",wh)
             handi_info["white"]=wh
             party_info["handicap"]=handi_info
             sgf=sgf+";W["+self.toSGF(wh)+"]"
@@ -262,6 +270,7 @@ class go_board:
         
         #первый, неоткатываемый узел партии содержит информацию о ней, размере доски, гандикапе
         u["party_info"]=party_info
+        u["model"]=bm
         #и там же в точности будем хранить фрагменты текста для SGF, будем сериализовать стек ходов в пикле или шелве
         u["sgf"]=sgf
         self.undo_stack.append(u)
@@ -286,8 +295,11 @@ class go_board:
     
     def redrawStones(self):
         #todo может мы в дальнейшем будем хранить списки камней на стеке отката и рисовать с него, пока - с доски
-        self.drawListStones("black", self.engine.list_stones("black"))
-        self.drawListStones("white", self.engine.list_stones("white"))
+        bm=self.top_move()["model"]
+        self.drawListStones("black", bm.list("black"))
+        self.drawListStones("white", bm.list("white"))
+        #self.drawListStones("black", self.engine.list_stones("black"))
+        #self.drawListStones("white", self.engine.list_stones("white"))
     
     def showHint(self):
         if len(self.hintRithm)>0 :
@@ -302,18 +314,25 @@ class go_board:
             self.top_move()["hint"]=hint
             
     def gobanClicker(self, s) :
+        bm=self.top_move()["model"]
+        if not bm.movePossible("black",s) :
+            messagebox.showinfo("Error move", "Error move")
+            return
         was_hint= self.top_move().has_key("hint") #Ход сделан с подсказкой
         self.engine.play("black",s)
+        bm=bm.clone()
+        
+        bm.doMove("black",s)
+        
         mv_info={}
+        mv_info["model"]=bm
+        
         mv_info["black"]=s
         mv_info["white"]=self.top_move()["white"] #пока  нужно это хотя по сути, камни все равно с доски
         self.undo_stack.append(mv_info)
         self.redrawStones()
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
-        self.showInfoCallback("White moved "+wh)
-        self.showHint() 
-        self.redrawStones()
         sgf=";B["+self.toSGF(s)+"]"
         if was_hint: 
             sgf=sgf+"C[with hint]"
@@ -321,8 +340,13 @@ class go_board:
             sgf=sgf+"C[without hint]"
         if (wh<>"PASS") and (wh<>"RESIGN") :
             sgf=sgf+";W["+self.toSGF(wh)+"]"
+            bm.doMove("white",wh)
         else:
             sgf=sgf+";W[]"
+        
+        self.showInfoCallback("White moved "+wh)
+        self.showHint() 
+        self.redrawStones()
         mv_info["sgf"]=sgf
     
     def undo(self):
@@ -335,26 +359,40 @@ class go_board:
         
     #сделать ход за игрока    
     def help(self):
+        bm=self.top_move()["model"].clone()
         s=self.engine.genmove("black")
+        bm.doMove[s]
         mv_info={}
+        mv_info["model"]=bm
         mv_info["black"]=s
         mv_info["white"]=self.top_move()["white"]
         self.undo_stack.append(mv_info)
         self.redrawStones()
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
+        sgf=";B["+self.toSGF(s)+"]"
+        sgf=sgf+"C[with help]"
+        if (wh<>"PASS") and (wh<>"RESIGN") :
+            sgf=sgf+";W["+self.toSGF(wh)+"]"
+            bm.doMove("white",wh)
+        else:
+            sgf=sgf+";W[]"
+        mv_info["sgf"]=sgf
         self.redrawStones()
-        sgf=";B["+self.toSGF(s)+"];W["+self.toSGF(wh)+"]"
+        
         mv_info["sgf"]=sgf
     
     #черные спасовали
     def move_pass(self):
+        bm=self.top_move()["model"].clone()
         mv_info={}
         mv_info["black"]="PASS"
+        mv_info["model"]=bm
         self.undo_stack.append(mv_info)
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
         if (wh<>"PASS") and (wh<>"RESIGN"):
+            bm.doMove(wh)
             sgf=";B[];W["+self.toSGF(wh)+"]"
         else:
             sgf=";B[];W["+self.toSGF(wh)+"]"
@@ -453,7 +491,7 @@ class GoEngine:
         
     def handicap(self, stones) :
         # всю партию машина играет в режиме байоми, по нужному числу секунд на ход
-        return self.gtp("fixed_handicap "+str(stones))
+        return self.gtp("fixed_handicap "+str(stones)).upper().strip().split()
         
     def boardsize(self, size):
         return self.gtp('boardsize {0}'.format(size)).strip()
@@ -464,13 +502,13 @@ class GoEngine:
         return self.gtp('estimate_score').strip()
     
     def genmove(self, color):
-        return self.gtp('genmove {0}'.format(color)).strip()
+        return self.gtp('genmove {0}'.format(color)).upper().strip()
     
     def play(self, color, position):
         return self.gtp('play {0} {1}'.format(color, position)).strip()
     
     def list_stones(self, color):
-        return self.gtp('list_stones {0}'.format(color)).strip().split()
+        return self.gtp('list_stones {0}'.format(color)).upper().strip().split()
     
     def showboard(self):
         return self.gtp('showboard')
@@ -490,7 +528,8 @@ class gameInterface :
         
     def __init__(self,root):
         self.engine=GoEngine()
-        self.engine.StartEngin("gnugo.exe --mode gtp")
+        #self.engine.StartEngin("gnugo.exe --mode gtp")
+        self.engine.StartEngin("leela080.exe --gtp")
         self.linedist= 20
         self.boardsize= 19
         self.canvasFrame=Frame(root)
