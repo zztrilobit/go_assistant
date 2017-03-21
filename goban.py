@@ -5,6 +5,10 @@ from os.path import splitext
 import os
 import pickle
 import copy
+import shelve
+from subprocess import *
+import time
+import popen2
 
 ## модель игры - расчет содержимого доски после цепочки ходов
 class boardModel:
@@ -304,14 +308,16 @@ class go_board:
     def showHint(self):
         if len(self.hintRithm)>0 :
             ch=self.hintRithm[0]
+            #циклически вращаем строку
             self.hintRithm=self.hintRithm[1:len(self.hintRithm)]+ch
             doHint=ch=="y"
         else:
             doHint=self.useHintCallback()
         if doHint:
             hint=self.engine.genmove("black")
-            self.engine.undo()
-            self.top_move()["hint"]=hint
+            if ( hint<>"PASS" ) and ( hint<> "RESIGN" ) :
+                self.engine.undo()
+                self.top_move()["hint"]=hint
             
     def gobanClicker(self, s) :
         bm=self.top_move()["model"]
@@ -395,7 +401,7 @@ class go_board:
             bm.doMove(wh)
             sgf=";B[];W["+self.toSGF(wh)+"]"
         else:
-            sgf=";B[];W["+self.toSGF(wh)+"]"
+            sgf=";B[];W[]"
         mv_info["sgf"]=sgf
     
     # функциональная обертка для клика по гобану
@@ -432,7 +438,8 @@ class go_board:
                 newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3], outline="red"))
 
         self.stones_figs[color]=newList
-    
+        root.update()
+        
     def  xToLetter (self, x):
         return self.GTP_LETTERS[x]
     
@@ -462,16 +469,32 @@ class go_board:
 # интерактив с энжином
 class GoEngine:
     def __init__(self):
-        self._gtpnr = 1 
+        self._gtpnr = 1
+        self.running=False
     
     def StartEngin(self,cmd):
-        self.to_gnugo, self.from_gnugo = os.popen2(cmd)
+        print "starting ", cmd
+        # GnuGo через Popen работает. Leela - нет. даже с задержкой.
+        #p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE)
+        #p=Popen(["leela080.exe","--gtp"], shell=True, bufsize=-1, stdin=PIPE, stdout=PIPE)
+        #self.to_gnugo=p.stdin
+        #self.from_gnugo=p.stdout
+        #self.process=p
+        #time.sleep(10)
+        #self.to_gnugo, self.from_gnugo = os.popen2(cmd)
+        self.from_gnugo, self.to_gnugo = popen2.popen2(cmd)
+        self.running=True
     
     def gtp(self, command):
+        if not self.running : 
+            # raise BasicError("OOOOPS..... NO GTP ENGINE!!!!")
+            print ("OOOOPS..... NO GTP ENGINE!!!!")
+            return
         verbose = True
         cmd = str(self._gtpnr) + " " + command
         if verbose:
             print cmd
+            sys.stdout.flush()
         self.to_gnugo.write(cmd + "\n")
         self.to_gnugo.flush()
         status = self.from_gnugo.read(1)
@@ -482,22 +505,28 @@ class GoEngine:
         assert(self.from_gnugo.read(1) == "\n")
         if verbose:
             print value
+        retval=value[1 + len(str(self._gtpnr)):]
+        #todo - тут надо бы вылавливать ошибки хотя бы так
+        self.is_ok=value[0]=="="
+        if not self.is_ok:
+            print "gtp error!!! "+retval
         self._gtpnr += 1
-        return value[1 + len(str(self._gtpnr)):]
+        return retval
         
     def time_by_move(self, seconds) :
         # всю партию машина играет в режиме байоми, по нужному числу секунд на ход
         return self.gtp("time_settings 1 "+str(seconds)+" 1")
         
     def handicap(self, stones) :
-        # всю партию машина играет в режиме байоми, по нужному числу секунд на ход
-        return self.gtp("fixed_handicap "+str(stones)).upper().strip().split()
+        s=self.gtp("fixed_handicap "+str(stones))
+        return s.upper().strip().split()
         
     def boardsize(self, size):
         return self.gtp('boardsize {0}'.format(size)).strip()
     
     def clear_board(self):
         return self.gtp('clear_board').strip()
+        
     def estimate_score(self):
         return self.gtp('estimate_score').strip()
     
@@ -516,38 +545,97 @@ class GoEngine:
     def final_score(self):
         return self.gtp('final_score')
     
+    def quit(self):
+        r=self.gtp('quit')
+        self.running=False
+        return r
+        
     def undo(self):
         return self.gtp('undo')
+
+# форма с настройками игры
+class optDialog :
+    def __init__(self,root):
+        self.w=Toplevel(root)
+        hlabel=Label(self.w,text="  Board size  ")
+        hlabel.pack(side="top", padx=5, pady=5 )
         
+        self.gridSize=StringVar()
+        self.cbGridSize=Combobox(self.w, width=4, values=[9,13,19], textvariable=self.gridSize)    
+        self.cbGridSize.pack(side="top", padx=5, pady=5 )
+        
+        hlabel=Label(self.w,text="  Handicap  ")
+        hlabel.pack(side="top", padx=5, pady=5 )
+        
+        self.handicap=StringVar()
+        self.cbHandicap=Combobox(self.w, width=4, values=["",2,3,4,5,6,7,8,9], textvariable=self.handicap)
+        self.cbHandicap.pack(side="top", padx=5, pady=5 )
+        
+        hlabel=Label(self.w,text="  Hint rithm  ")        
+        hlabel.pack(side="top", padx=5, pady=5 )
+        
+        self.hintRithm=StringVar()
+        self.entHintRithm=Entry(self.w,textvariable=self.hintRithm)
+        self.entHintRithm.pack(side="top", padx=5, pady=5)
+
+        hlabel=Label(self.w,text="  Game engine  ")        
+        hlabel.pack(side="top", padx=5, pady=5 )
+        self.gameEnginePath=StringVar()
+        self.entGameEngine=Entry(self.w,textvariable=self.gameEnginePath)
+        self.entGameEngine.pack(side="top", padx=5, pady=5)
+        
+        self.okBtn=Button(self.w,text="OK")
+        self.okBtn.bind("<Button-1>",lambda _ : self.doOk() )
+        self.okBtn.pack(side="top", padx=5, pady=5 )
+        self.is_ok=False
+        
+    def doOk(self):
+        self.w.destroy()
+        self.is_ok=True
+        
+    def ShowModal(self, params):
+        self.w.grab_set()
+        self.w.focus_set()
+        
+        self.gridSize.set(params["boardsize"])
+        self.handicap.set(params["handicap"])
+        self.hintRithm.set(params["hintrithm"])
+        self.gameEnginePath.set(params["gameengine"])
+
+        self.w.wait_window()
+        if self.is_ok:
+            params["boardsize"]=int(self.gridSize.get())
+            params["handicap"]=self.handicap.get()
+            params["hintrithm"]=self.hintRithm.get()
+            params["gameengine"]=self.gameEnginePath.get()
+
 class gameInterface :
     #кнопка на фрейм кнопок, вертикально
     def newBtn_1(self,caption, action):
         res=Button(self.buttonFrame,text=caption)
         res.bind( "<Button-1>", action )
         res.pack(side="top", padx=5, pady=5 )
+    def newBtn_GF(self,caption, action):
+        res=Button(self.gameFrame,text=caption)
+        res.bind( "<Button-1>", action )
+        res.pack(side="top", padx=5, pady=5 )
         
     def __init__(self,root):
-        self.engine=GoEngine()
-        #self.engine.StartEngin("gnugo.exe --mode gtp")
-        self.engine.StartEngin("leela080.exe --gtp")
+        self.root=root
         self.linedist= 20
         self.boardsize= 19
+        self.engine=GoEngine()
+        
         self.canvasFrame=Frame(root)
         self.canvasFrame.pack( side="left", fill="y")
         self.buttonFrame=Frame(root)
-        self.buttonFrame.pack( side="left", fill="y")
+        self.buttonFrame.pack(side="left",fill="y")
         
+        self.btnNewGame=self.newBtn_1("Options", lambda _ : self.showoptions() )
         self.btnNewGame=self.newBtn_1("New Game", lambda _ : self.newGame() )
-        self.gridSize=StringVar()
-        self.cbGridSize=Combobox(self.buttonFrame, width=4, values=[9,13,19], textvariable=self.gridSize)
-        self.cbGridSize.pack(side="top", padx=5, pady=5 )
+        
+        self.handicap=""
 
-        hlabel=Label(self.buttonFrame,text="  Handicap  ")
-        hlabel.pack(side="top", padx=5, pady=5 )
-        self.handicap=StringVar()
-        self.handicap.set("")
-        self.cbHandicap=Combobox(self.buttonFrame, width=4, values=["",2,3,4,5,6,7,8,9], textvariable=self.handicap)
-        self.cbHandicap.pack(side="top", padx=5, pady=5 )
         self.btnUndo=self.newBtn_1("Pass", lambda _ : self.goban.move_pass() )
         self.btnUndo=self.newBtn_1("Undo", lambda _ : self.goban.undo() )
         self.btnHelp=self.newBtn_1("Help", lambda _ : self.goban.help() )
@@ -562,17 +650,68 @@ class gameInterface :
         self.cbHint=Checkbutton(self.buttonFrame,variable=self.makeHint,text="Make hint")
         self.cbHint.pack(side="top", padx=5, pady=5)
 
-        self.hintRithm=StringVar()
-        self.hintRithm.set("y")
-        self.entHintRithm=Entry(self.buttonFrame,textvariable=self.hintRithm)
-        self.entHintRithm.pack(side="top", padx=5, pady=5)
+        self.hintRithm='y'
         
         self.goban.useHintCallback=lambda  : self.makeHint.get() == 1 
-        self.goban.newGame()
         self.btnScore=self.newBtn_1("Calc score", lambda _ : self.score() )
         self.goban.showInfoCallback=lambda i : self.showInfo(i)
         
         self.btnStoreGame=self.newBtn_1("Store game", lambda _ : self.storeGame() )
+        self.gameEnginePath="gnugo.exe --mode gtp"
+        self.read_settings()
+        self.engine=GoEngine()
+        
+    
+    def showoptions(self):
+        p={}
+        p["boardsize"]=self.boardsize
+        p["hintrithm"]=self.hintRithm
+        p["handicap"]=self.handicap
+        p["gameengine"]=self.gameEnginePath
+        
+        f=optDialog(self.root)
+        f.ShowModal(p)
+        self.boardsize=p["boardsize"]
+        self.handicap=p["handicap"]
+        self.hintRithm=p["hintrithm"]
+        self.gameEnginePath=p["gameengine"] 
+        self.store_settings()
+        
+    # читаем файл настроек
+    def read_settings(self):
+        db = shelve.open("my_settings")
+        
+        if db.has_key("boardsize") : 
+            self.boardsize=int(db["boardsize"])
+        else: 
+            self.boardsize=13
+        
+        if db.has_key("handicap"): 
+            self.handicap=db["handicap"]
+        else:
+            self.handicap=""
+            
+        if db.has_key("hintrithm") :  
+            self.hintRithm=db["hintrithm"] 
+        else: self.hintRithm = "y"
+        
+        if db.has_key("gameengine"):
+            self.gameEnginePath=db["gameengine"]
+        else:
+            self.gameEnginePath="gnugo.exe --mode gtp"
+            
+        db.close()
+    
+    # пишем файл настроек
+    def store_settings(self):
+        db = shelve.open("my_settings")
+        
+        db["boardsize"]=self.boardsize
+        db["handicap"]=self.handicap
+        db["hintrithm"]=self.hintRithm
+        db["gameengine"]=self.gameEnginePath
+            
+        db.close()
     
     #сохранение игры
     def storeGame(self):
@@ -595,33 +734,40 @@ class gameInterface :
         self.showInfo("Score: "+s)
         
     def newGame(self):
-        self.engine.time_by_move(15)
+        if self.engine.running :
+            self.engine.quit()
+        self.engine.StartEngin(self.gameEnginePath)
         
-        if (self.gridSize.get()=="") : self.gridSize.set(13)
-        self.boardsize=int(self.gridSize.get())
+        #self.engine.StartEngin("leela080.exe --gtp")
+        #self.engine.StartEngin("gnugo.exe --mode gtp")
+        self.engine.time_by_move(7)
         
         self.engine.boardsize(self.boardsize)
         self.engine.clear_board()
         
         self.goban.boardsize=self.boardsize 
         self.goban.linedist=self.linedist
-
-        self.goban.hintRithm=self.hintRithm.get()
+        self.goban.hintRithm=self.hintRithm
+        self.goban.engine=self.engine
+        
         self.goban.drawBoard()
-        h=self.handicap.get()
-        self.goban.handicap=h
+        
+        self.goban.handicap=self.handicap
         self.goban.newGame()
             
         
 root=Tk()
 style=Style()
-style.configure("TButton",  background="gray")
+style.configure("TNotebook",  background="gray")
+style.configure("TNotebook.Tab",  background="gray", lightcolor="gray", foregroung="gray")
+style.map("TNotebook.Tab",background=[('active','gray')])
+
 style.configure("TFrame",  background="gray")
 style.configure("TCheckbutton",  background="gray")
 
 root.config()
 gi=gameInterface(root) 
-gi.newGame()      
+gi.newGame()
 root.mainloop()
 
-gi.engine.gtp("quit")
+gi.engine.quit()
