@@ -475,14 +475,14 @@ class GoEngine:
     def StartEngin(self,cmd):
         print "starting ", cmd
         # GnuGo через Popen работает. Leela - нет. даже с задержкой.
-        #p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE)
-        #p=Popen(["leela080.exe","--gtp"], shell=True, bufsize=-1, stdin=PIPE, stdout=PIPE)
-        #self.to_gnugo=p.stdin
-        #self.from_gnugo=p.stdout
-        #self.process=p
+        p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        
+        self.to_gnugo=p.stdin
+        self.from_gnugo=p.stdout
+        self.process=p
         #time.sleep(10)
         #self.to_gnugo, self.from_gnugo = os.popen2(cmd)
-        self.from_gnugo, self.to_gnugo = popen2.popen2(cmd)
+        #self.from_gnugo, self.to_gnugo = popen2.popen2(cmd)
         self.running=True
     
     def gtp(self, command):
@@ -497,17 +497,40 @@ class GoEngine:
             sys.stdout.flush()
         self.to_gnugo.write(cmd + "\n")
         self.to_gnugo.flush()
+        
+        #ждем начало ответа - "=" - окей "?" - ошибка
         status = self.from_gnugo.read(1)
-        value = status
-        while not status == "\n":
+        while status<>"=" and status<>"?" :
             status = self.from_gnugo.read(1)
-            value += status
-        assert(self.from_gnugo.read(1) == "\n")
+        self.is_ok=status=="="
+        
+        #ждем id команды
+        value = self.from_gnugo.read(1)
+        while value<>str(self._gtpnr):
+            status = self.from_gnugo.read(1)
+            value+=status
+        
+        value=""
+        is_break=False
+        status = self.from_gnugo.read(1)
+        
+        # ждем двух переводов строки
+        while not (is_break and status=="\n" ):
+            if status<>"\r":
+                is_break=(status=="\n")
+            if status<>"\n" and status<>"\r" :
+                value += status
+            else :
+                value +=" "
+            status = self.from_gnugo.read(1)
+            
+        #assert(self.from_gnugo.read(1) == "\n")
         if verbose:
             print value
-        retval=value[1 + len(str(self._gtpnr)):]
+        #retval=value[1 + len(str(self._gtpnr)):]
+        retval=value
         #todo - тут надо бы вылавливать ошибки хотя бы так
-        self.is_ok=value[0]=="="
+        
         if not self.is_ok:
             print "gtp error!!! "+retval
         self._gtpnr += 1
