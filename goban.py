@@ -8,7 +8,8 @@ import copy
 import shelve
 from subprocess import *
 import time
-import popen2
+import ConfigParser
+import codecs
 
 ## модель игры - расчет содержимого доски после цепочки ходов
 class boardModel:
@@ -175,7 +176,7 @@ class boardModel:
     # можно ли делать этот ход
     def movePossible(self,color,posGtp):
         n=self.nodeByCrd(self.gtp2crd(posGtp))
-        if n["state"]<>"empty" : return False
+        if n["state"]!="empty" : return False
         nb=self.clone()
         nb.doMove(color,posGtp)
         #сможет ли камень после хода дышать?
@@ -237,7 +238,7 @@ class go_board:
         bm=boardModel(self.boardsize)
         bm.init()
         
-        if self.handicap<>"" :
+        if self.handicap!="" :
             # нарисуем камни гандикапа
             blacklist=self.engine.handicap(self.handicap)
             handi_info["count"]=self.handicap
@@ -258,7 +259,7 @@ class go_board:
         #sgf=sgf+"DT[2015-04-06]GN[06.04.2015_18_43.sgf]"
         
             
-        if self.handicap<>"":
+        if self.handicap!="":
             #делаем первый ход за белых
             u["black"]="PASS"
             u["white"]="PASS"
@@ -315,7 +316,7 @@ class go_board:
             doHint=self.useHintCallback()
         if doHint:
             hint=self.engine.genmove("black")
-            if ( hint<>"PASS" ) and ( hint<> "RESIGN" ) :
+            if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
                 self.engine.undo()
                 self.top_move()["hint"]=hint
             
@@ -344,7 +345,7 @@ class go_board:
             sgf=sgf+"C[with hint]"
         else:
             sgf=sgf+"C[without hint]"
-        if (wh<>"PASS") and (wh<>"RESIGN") :
+        if (wh!="PASS") and (wh!="RESIGN") :
             sgf=sgf+";W["+self.toSGF(wh)+"]"
             bm.doMove("white",wh)
         else:
@@ -359,8 +360,8 @@ class go_board:
         oldm=self.undo_stack.pop()
         
         #todo тут бы еще реду стэк организовать и и для сгф тоже, дабы создавать ветки партий
-        if (oldm["black"]<>"PASS") : self.engine.undo()
-        if (oldm["white"]<>"PASS") and (oldm["white"]<>"RESIGN") : self.engine.undo()
+        if (oldm["black"]!="PASS") : self.engine.undo()
+        if (oldm["white"]!="PASS") and (oldm["white"]!="RESIGN") : self.engine.undo()
         self.redrawStones()
         
     #сделать ход за игрока    
@@ -378,7 +379,7 @@ class go_board:
         mv_info["white"]=wh
         sgf=";B["+self.toSGF(s)+"]"
         sgf=sgf+"C[with help]"
-        if (wh<>"PASS") and (wh<>"RESIGN") :
+        if (wh!="PASS") and (wh!="RESIGN") :
             sgf=sgf+";W["+self.toSGF(wh)+"]"
             bm.doMove("white",wh)
         else:
@@ -397,8 +398,8 @@ class go_board:
         self.undo_stack.append(mv_info)
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
-        if (wh<>"PASS") and (wh<>"RESIGN"):
-            bm.doMove(wh)
+        if (wh!="PASS") and (wh!="RESIGN"):
+            bm.doMove("white",wh)
             sgf=";B[];W["+self.toSGF(wh)+"]"
         else:
             sgf=";B[];W[]"
@@ -425,14 +426,14 @@ class go_board:
         #todo - тут бы сделать поиск последнего непасованного камня в глубину
         
         # помечаем последний ход маркером 
-        if ((mw[color]<>"PASS") ):
+        if ((mw[color]!="PASS") and (mw[color]!="RESIGN") ):
             c=self.coords_by_names[mw[color]]
             d=self.linedist/3
             newList.append(self.goban.create_oval(c[0]+d,c[1]+d,c[2]-d,c[3]-d,fill=ocolor, outline=ocolor))
         # рисуем подсказку
         if (color=="black" and mw.has_key("hint") ):
             
-            if mw["hint"]<>"PASS":
+            if mw["hint"]!="PASS":
                 
                 c=self.coords_by_names[mw["hint"]]
                 newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3], outline="red"))
@@ -473,7 +474,7 @@ class GoEngine:
         self.running=False
     
     def StartEngin(self,cmd):
-        print "starting ", cmd
+        print ("starting "+cmd)
         # GnuGo через Popen работает. Leela - нет. даже с задержкой.
         p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE, stderr=PIPE)
         
@@ -493,20 +494,20 @@ class GoEngine:
         verbose = True
         cmd = str(self._gtpnr) + " " + command
         if verbose:
-            print cmd
+            print (cmd)
             sys.stdout.flush()
         self.to_gnugo.write(cmd + "\n")
         self.to_gnugo.flush()
         
         #ждем начало ответа - "=" - окей "?" - ошибка
         status = self.from_gnugo.read(1)
-        while status<>"=" and status<>"?" :
+        while status!="=" and status!="?" :
             status = self.from_gnugo.read(1)
         self.is_ok=status=="="
         
         #ждем id команды
         value = self.from_gnugo.read(1)
-        while value<>str(self._gtpnr):
+        while value!=str(self._gtpnr):
             status = self.from_gnugo.read(1)
             value+=status
         
@@ -516,9 +517,9 @@ class GoEngine:
         
         # ждем двух переводов строки
         while not (is_break and status=="\n" ):
-            if status<>"\r":
+            if status!="\r":
                 is_break=(status=="\n")
-            if status<>"\n" and status<>"\r" :
+            if status!="\n" and status!="\r" :
                 value += status
             else :
                 value +=" "
@@ -526,13 +527,13 @@ class GoEngine:
             
         #assert(self.from_gnugo.read(1) == "\n")
         if verbose:
-            print value
+            print (value)
         #retval=value[1 + len(str(self._gtpnr)):]
         retval=value
         #todo - тут надо бы вылавливать ошибки хотя бы так
         
         if not self.is_ok:
-            print "gtp error!!! "+retval
+            print ("gtp error!!! "+retval)
         self._gtpnr += 1
         return retval
         
@@ -702,39 +703,34 @@ class gameInterface :
         
     # читаем файл настроек
     def read_settings(self):
-        db = shelve.open("my_settings")
+        #по умолчанию
+        self.boardsize=13
+        self.handicap=""
+        self.hintRithm = "y"
+        self.gameEnginePath="gnugo.exe --mode gtp"
         
-        if db.has_key("boardsize") : 
-            self.boardsize=int(db["boardsize"])
-        else: 
-            self.boardsize=13
-        
-        if db.has_key("handicap"): 
-            self.handicap=db["handicap"]
-        else:
-            self.handicap=""
-            
-        if db.has_key("hintrithm") :  
-            self.hintRithm=db["hintrithm"] 
-        else: self.hintRithm = "y"
-        
-        if db.has_key("gameengine"):
-            self.gameEnginePath=db["gameengine"]
-        else:
-            self.gameEnginePath="gnugo.exe --mode gtp"
-            
-        db.close()
+        cp=ConfigParser.SafeConfigParser()
+        if os.path.exists("settings.ini") :
+            with codecs.open("settings.ini","r",encoding="utf-8") as f:
+                cp.readfp(f)
+            for name,value in cp.items("settings"):
+                if name=="boardsize" : self.boardsize=int(value)
+                if name=="handicap" : self.handicap=(value)
+                if name=="hintRithm" : self.hintRithm=(value)
+                if name=="gameEnginePath" : self.gameEnginePath=(value)
     
     # пишем файл настроек
     def store_settings(self):
-        db = shelve.open("my_settings")
+        cp=ConfigParser.SafeConfigParser()
+        cp.add_section("settings")
+        cp.set("settings","boardsize",str(self.boardsize))
+        cp.set("settings","handicap",self.handicap)
+        cp.set("settings","hintRithm",self.hintRithm)
+        cp.set("settings","gameEnginePath",self.gameEnginePath)
+        confFile = codecs.open('settings.ini', 'w', 'utf-8')
+        cp.write (confFile)
+        confFile.close()
         
-        db["boardsize"]=self.boardsize
-        db["handicap"]=self.handicap
-        db["hintrithm"]=self.hintRithm
-        db["gameengine"]=self.gameEnginePath
-            
-        db.close()
     
     #сохранение игры
     def storeGame(self):
@@ -777,8 +773,33 @@ class gameInterface :
         
         self.goban.handicap=self.handicap
         self.goban.newGame()
-            
-        
+
+#https://habrahabr.ru/post/119405/        
+class UnicodeConfigParser(ConfigParser.RawConfigParser):
+ 
+    def __init__(self, *args, **kwargs):
+        ConfigParser.RawConfigParser.__init__(self, *args, **kwargs)
+ 
+    def write(self, fp):
+        """Fixed for Unicode output"""
+        if self._defaults:
+            fp.write("[%s]\n" % DEFAULTSECT)
+            for (key, value) in self._defaults.items():
+                fp.write("%s = %s\n" % (key, unicode(value).replace('\n', '\n\t')))
+            fp.write("\n")
+        for section in self._sections:
+            fp.write("[%s]\n" % section)
+            for (key, value) in self._sections[section].items():
+                if key != "__name__":
+                    fp.write("%s = %s\n" %
+                             (key, unicode(value).replace('\n','\n\t')))
+            fp.write("\n")
+ 
+    # This function is needed to override default lower-case conversion
+    # of the parameter's names. They will be saved 'as is'.
+    def optionxform(self, strOut):
+        return strOut
+         
 root=Tk()
 style=Style()
 style.configure("TNotebook",  background="gray")
