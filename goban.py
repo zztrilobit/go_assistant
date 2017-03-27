@@ -10,6 +10,7 @@ from subprocess import *
 import time
 import ConfigParser
 import codecs
+from datetime import datetime
 
 ## модель игры - расчет содержимого доски после цепочки ходов
 class boardModel:
@@ -319,6 +320,11 @@ class go_board:
             if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
                 self.engine.undo()
                 self.top_move()["hint"]=hint
+    def genHint(self):
+        hint=self.engine.genmove("black")
+        if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
+            self.engine.undo()
+            self.top_move()["hint"]=hint
             
     def gobanClicker(self, s) :
         bm=self.top_move()["model"]
@@ -366,29 +372,9 @@ class go_board:
         
     #сделать ход за игрока    
     def help(self):
-        bm=self.top_move()["model"].clone()
-        s=self.engine.genmove("black")
-        bm.doMove[s]
-        mv_info={}
-        mv_info["model"]=bm
-        mv_info["black"]=s
-        mv_info["white"]=self.top_move()["white"]
-        self.undo_stack.append(mv_info)
-        self.redrawStones()
-        wh=self.engine.genmove("white")
-        mv_info["white"]=wh
-        sgf=";B["+self.toSGF(s)+"]"
-        sgf=sgf+"C[with help]"
-        if (wh!="PASS") and (wh!="RESIGN") :
-            sgf=sgf+";W["+self.toSGF(wh)+"]"
-            bm.doMove("white",wh)
-        else:
-            sgf=sgf+";W[]"
-        mv_info["sgf"]=sgf
+        self.genHint()
         self.redrawStones()
         
-        mv_info["sgf"]=sgf
-    
     #черные спасовали
     def move_pass(self):
         bm=self.top_move()["model"].clone()
@@ -436,7 +422,7 @@ class go_board:
             if mw["hint"]!="PASS":
                 
                 c=self.coords_by_names[mw["hint"]]
-                newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3], outline="red"))
+                newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3], outline="blue", width=2))
 
         self.stones_figs[color]=newList
         root.update()
@@ -618,6 +604,7 @@ class optDialog :
         self.is_ok=True
         
     def ShowModal(self, params):
+        self.is_ok=False
         self.w.grab_set()
         self.w.focus_set()
         
@@ -625,6 +612,7 @@ class optDialog :
         self.handicap.set(params["handicap"])
         self.hintRithm.set(params["hintrithm"])
         self.gameEnginePath.set(params["gameengine"])
+        print params["gameengine"]
 
         self.w.wait_window()
         if self.is_ok:
@@ -632,6 +620,7 @@ class optDialog :
             params["handicap"]=self.handicap.get()
             params["hintrithm"]=self.hintRithm.get()
             params["gameengine"]=self.gameEnginePath.get()
+            print params["gameengine"]
 
 class gameInterface :
     #кнопка на фрейм кнопок, вертикально
@@ -716,8 +705,8 @@ class gameInterface :
             for name,value in cp.items("settings"):
                 if name=="boardsize" : self.boardsize=int(value)
                 if name=="handicap" : self.handicap=(value)
-                if name=="hintRithm" : self.hintRithm=(value)
-                if name=="gameEnginePath" : self.gameEnginePath=(value)
+                if name=="hintrithm" : self.hintRithm=(value)
+                if name=="gameengineeath" : self.gameEnginePath=(value)
     
     # пишем файл настроек
     def store_settings(self):
@@ -725,8 +714,8 @@ class gameInterface :
         cp.add_section("settings")
         cp.set("settings","boardsize",str(self.boardsize))
         cp.set("settings","handicap",self.handicap)
-        cp.set("settings","hintRithm",self.hintRithm)
-        cp.set("settings","gameEnginePath",self.gameEnginePath)
+        cp.set("settings","hintrithm",self.hintRithm)
+        cp.set("settings","gameengineeath",self.gameEnginePath)
         confFile = codecs.open('settings.ini', 'w', 'utf-8')
         cp.write (confFile)
         confFile.close()
@@ -735,7 +724,8 @@ class gameInterface :
     #сохранение игры
     def storeGame(self):
         for_sgf=[ x["sgf"] for x in self.goban.undo_stack ]
-        f = open('my_sgf.txt', 'w')
+        fn= datetime.strftime(datetime.now(), "%m.%d.%Y_%H_%M")+".sgf"
+        f = open(fn, 'w')
         s="("+"\n".join(for_sgf)+")"
         f.write(s)
         f.close()
