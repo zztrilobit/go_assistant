@@ -722,7 +722,7 @@ class gameInterface :
         
     
     #сохранение игры
-    def storeGame(self):
+    def storeGame(self):  
         for_sgf=[ x["sgf"] for x in self.goban.undo_stack ]
         fn= datetime.strftime(datetime.now(), "%m.%d.%Y_%H_%M")+".sgf"
         f = open(fn, 'w')
