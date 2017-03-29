@@ -211,7 +211,14 @@ class go_board:
         # стэк в котором будет накапливаться информация для sgf-файла
         self.for_sgf=[]
         
+        #коллбэки для работы с комментами
+        self.getCommentCallback=lambda _ :  ""
+        self.setCommentCallback=lambda _ :  ""
+        self.addCommentCallback=lambda _ :  ""
+        
     def gtp2alpha(self,s): return self.toSGF(s+"1")[0]
+    
+    def gtp2cmnt(self,s): return self.toSGF(s)[0]+s[1:]
 
     # приведение координатных обозначений GTP->SGF
     def toSGF(self,s):
@@ -338,11 +345,6 @@ class go_board:
             r["white"]="PASS"
             return r
     
-    def Resize(self):
-        self.gobansize = self.linedist * (self.boardsize + 1) #размер доски
-        self.goban.config(width=self.gobansize,height=self.gobansize)
-        
-    
     def redrawStones(self):
         #todo может мы в дальнейшем будем хранить списки камней на стеке отката и рисовать с него, пока - с доски
         bm=self.top_move()["model"]
@@ -360,14 +362,13 @@ class go_board:
         else:
             doHint=self.useHintCallback()
         if doHint:
-            hint=self.engine.genmove("black")
-            if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
-                self.engine.undo()
-                self.top_move()["hint"]=hint
+            self.genHint()
+            
     def genHint(self):
         hint=self.engine.genmove("black")
         if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
             self.engine.undo()
+            self.addCommentCallback("Hint: "+self.gtp2cmnt(hint))
             self.top_move()["hint"]=hint
             
     def gobanClicker(self, s) :
@@ -383,6 +384,8 @@ class go_board:
         
         mv_info={}
         mv_info["model"]=bm
+        mv_info["comment"]=self.getCommentCallback()
+        self.setCommentCallback("")
         
         mv_info["black"]=s
         mv_info["white"]=self.top_move()["white"] #пока  нужно это хотя по сути, камни все равно с доски
@@ -391,10 +394,8 @@ class go_board:
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
         sgf=";B["+self.toSGF(s)+"]"
-        if was_hint: 
-            sgf=sgf+"C[with hint]"
-        else:
-            sgf=sgf+"C[without hint]"
+        sgf=sgf+"C["+mv_info["comment"]+"]"
+        
         if (wh!="PASS") and (wh!="RESIGN") :
             sgf=sgf+";W["+self.toSGF(wh)+"]"
             bm.doMove("white",wh)
@@ -448,6 +449,7 @@ class go_board:
             c=self.coords_by_names[stone]
             o=self.goban.create_oval(c[0],c[1],c[2],c[3],fill=color)
             self.goban.tag_bind(o,"<Motion>",self.motionEvent(stone))
+            self.goban.tag_bind(o,'<Button-3>',self.rightClickEvent(stone))
             newList.append(o)
         
         # точки на последних камнях
@@ -471,6 +473,8 @@ class go_board:
                 c=self.coords_by_names[mw["hint"]]
                 o=self.goban.create_oval(c[0],c[1],c[2],c[3], outline="blue", width=2)
                 self.goban.tag_bind(o,"<Motion>",self.motionEvent(mw["hint"]))
+                self.goban.tag_bind(o,'<Button-3>',self.rightClickEvent(mw["hint"]))
+
                 newList.append(o)
 
         self.stones_figs[color]=newList
@@ -487,16 +491,28 @@ class go_board:
         
     def onMotion(self,s) :
         self.showInfoCallback(self.gtp2alpha(s[0])+s[1:])
+
+    def rightClickEvent(self, s) :
+        return lambda _ : self.onRightClick (s)
+        
+    def onRightClick(self, s) :
+        self.addCommentCallback(s)
         
     def drawBoard (self) : 
         self.goban.delete("all")
         max=self.boardsize * self.linedist
-        self.Resize()
+
+        self.gobansize = self.linedist * (self.boardsize + 1) #размер доски
+        self.goban.config(width=self.gobansize,height=self.gobansize)
+
         
         for i in range(self.boardsize): 
             start=self.linedist * (i+1)
             self.goban.create_line(self.linedist,start,max,start, width=1)
+            self.goban.create_text(self.linedist/2, start, text=(self.boardsize-i))
             self.goban.create_line(start,self.linedist,start,max,width=1, fill="black")
+            self.goban.create_text(start, max+self.linedist/2, text=["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t"][i])
+            
         for i in range(self.boardsize):
             for j in range(self.boardsize):
                 x1 =  ((self.linedist * i) + (self.linedist / 2)) + 2
@@ -508,13 +524,14 @@ class go_board:
                 r=self.goban.create_rectangle (x1, y1, x2, y2, tags="fieldname" , outline="" , fill="")
                 self.goban.tag_bind(r,'<Button-1>',self.makeCliker(fieldname))
                 self.goban.tag_bind(r,'<Motion>',self.motionEvent(fieldname))
+                self.goban.tag_bind(r,'<Button-3>',self.rightClickEvent(fieldname))
 
 # интерактив с энжином
 class GoEngine:
     def __init__(self):
         self._gtpnr = 1
         self.running=False
-    
+     
     def StartEngin(self,cmd):
         print ("starting "+cmd)
         # GnuGo через Popen работает. Leela - нет. даже с задержкой.
@@ -666,7 +683,7 @@ class optDialog :
         
         self.gridSize.set(params["boardsize"])
         self.handicap.set(params["handicap"])
-        self.hintRithm.set(params["hintrithm"])
+        self.hintRithm.set( params["hintrithm"])
         self.gameEnginePath.set(params["gameengine"])
         print params["gameengine"]
 
@@ -699,6 +716,15 @@ class gameInterface :
         self.canvasFrame.pack( side="left", fill="y")
         self.buttonFrame=Frame(root)
         self.buttonFrame.pack(side="left",fill="y")
+    
+        self.commentFrame=Frame(root)
+        self.commentFrame.pack(side="left",fill="y")
+        
+        lblC=Label(self.commentFrame,text=" Comments ")
+        lblC.pack(side="top", padx=5, pady=5)
+        
+        self.commentTxt= Text(self.commentFrame, height=10, width=30)
+        self.commentTxt.pack(side="top", fill="y")
         
         self.btnNewGame=self.newBtn_1("Options", lambda _ : self.showoptions() )
         self.btnNewGame=self.newBtn_1("New Game", lambda _ : self.newGame() )
@@ -725,13 +751,25 @@ class gameInterface :
         self.btnScore=self.newBtn_1("Calc score", lambda _ : self.score() )
         self.goban.showInfoCallback=lambda i : self.showInfo(i)
         
+        self.goban.getCommentCallback=lambda :  self.GetComment()
+        self.goban.setCommentCallback=lambda  s:  self.SetComment(s)
+        self.goban.addCommentCallback=lambda  s:  self.AddComment(s)
+        
         self.btnStoreGame=self.newBtn_1("Save SGF", lambda _ : self.storeSgf() )
         self.btnStoreGame=self.newBtn_1("Store game", lambda _ : self.storeGame() )
         self.btnStoreGame=self.newBtn_1("Restore game", lambda _ : self.restoreGame() )
         self.gameEnginePath="gnugo.exe --mode gtp"
         self.read_settings()
         self.engine=GoEngine()
-        
+    
+    # - для коллбэков по комментариям - взять, выставить, добавить
+    def GetComment(self):
+        return self.commentTxt.get('1.0',END)
+    def SetComment(self,s):
+        self.commentTxt.delete('1.0',END)
+        self.commentTxt.insert('1.0',s)
+    def AddComment(self,s):
+        self.commentTxt.insert(END," "+s)
     
     def showoptions(self):
         p={}
@@ -783,10 +821,10 @@ class gameInterface :
     def storeSgf(self):
         for_sgf=[ x["sgf"] for x in self.goban.undo_stack ]
         fn= datetime.strftime(datetime.now(), "%m.%d.%Y_%H_%M")+".sgf"
-        f = open(fn, 'w')
         s="("+"\n".join(for_sgf)+")"
-        f.write(s)
-        f.close()
+        with codecs.open(fn,"w",encoding="utf-8") as f:
+            f.write(s)
+            f.close()
     
     # сохранение партии для последующего продолжения игры
     def storeGame(self):
