@@ -1,11 +1,11 @@
 ﻿from Tkinter import *
+import tkMessageBox
 from ttk import *
 from sys import exit as sysexit
 from os.path import splitext
 import os
 import pickle
 import copy
-import shelve
 from subprocess import *
 import time
 import ConfigParser
@@ -211,7 +211,8 @@ class go_board:
         # стэк в котором будет накапливаться информация для sgf-файла
         self.for_sgf=[]
         
-    
+    def gtp2alpha(self,s): return self.toSGF(s+"1")[0]
+
     # приведение координатных обозначений GTP->SGF
     def toSGF(self,s):
         letters=['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T']
@@ -220,6 +221,8 @@ class go_board:
         return (""+letters[i1]+letters[i2]).lower()
         
     def newGame(self) :
+        self.runEngin()
+        
         self.stones_figs["black"]=[]
         self.stones_figs["white"]=[]
         self.drawBoard()
@@ -231,9 +234,12 @@ class go_board:
         u={}
         handi_info={}
         party_info={}
+        party_info["gameEnginePath"]=self.gameEnginePath
+        
         # в первый узел добавим информацию о партии. Чтобы при восстановлении все это накатить
         party_info["boardsize"]=self.boardsize
         party_info["komi"]=0
+        party_info["hintRithm"]=self.hintRithm
         
         #доска
         bm=boardModel(self.boardsize)
@@ -283,7 +289,45 @@ class go_board:
         
         self.showHint()
         self.redrawStones()
+    
+    def runEngin(self) :
+        if self.engine.running :
+            self.engine.quit()
+        self.engine.StartEngin(self.gameEnginePath)
+        self.engine.boardsize(self.boardsize)
+        #self.engine.StartEngin("leela080.exe --gtp")
+        #self.engine.StartEngin("gnugo.exe --mode gtp")
+        self.engine.time_by_move(7)
+    
+    def replay(self, stack) :
+        self.stones_figs["black"]=[]
+        self.stones_figs["white"]=[]
+        self.drawBoard()
+        self.undo_stack=stack  
+        party_info=stack[0]["party_info"]
         
+        self.boardsize=party_info["boardsize"]
+        self.gameEnginePath=party_info["gameEnginePath"]
+        self.hintRithm=party_info["hintRithm"]
+        self.runEngin()
+        
+        if party_info.has_key("handicap") :
+            handi_info=party_info["handicap"]
+            blacklist=handi_info["list"]
+            #todo по идее гандикап надо бы продавливать командами "установить свободный" и "разместить камни свободного"
+            for i in blacklist :
+                self.engine.play("black",i)
+            self.engine.play("white",handi_info["white"])
+        for j in range(1,len(self.undo_stack)):
+            bl_m=self.undo_stack[j]["black"]
+            if bl_m!="PASS" and bl_m!="RESIGN":
+                self.engine.play("black",bl_m)
+                
+            wh_m=self.undo_stack[j]["white"]
+            if wh_m!="PASS" and wh_m!="RESIGN":
+                self.engine.play("white",wh_m)
+        self.redrawStones()
+            
         
     def top_move(self) : 
         if (len(self.undo_stack)>0) :
@@ -329,7 +373,7 @@ class go_board:
     def gobanClicker(self, s) :
         bm=self.top_move()["model"]
         if not bm.movePossible("black",s) :
-            messagebox.showinfo("Error move", "Error move")
+            tkMessageBox.showinfo("Error move", "Error move")
             return
         was_hint= self.top_move().has_key("hint") #Ход сделан с подсказкой
         self.engine.play("black",s)
@@ -390,7 +434,8 @@ class go_board:
         else:
             sgf=";B[];W[]"
         mv_info["sgf"]=sgf
-    
+        self.redrawStones()
+        
     # функциональная обертка для клика по гобану
     def makeCliker(self, s) : return lambda _: self.gobanClicker(s)
         
@@ -401,7 +446,9 @@ class go_board:
         newList=[]
         for stone in list : 
             c=self.coords_by_names[stone]
-            newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3],fill=color))
+            o=self.goban.create_oval(c[0],c[1],c[2],c[3],fill=color)
+            self.goban.tag_bind(o,"<Motion>",self.motionEvent(stone))
+            newList.append(o)
         
         # точки на последних камнях
         if (color=="black"): 
@@ -422,7 +469,9 @@ class go_board:
             if mw["hint"]!="PASS":
                 
                 c=self.coords_by_names[mw["hint"]]
-                newList.append(self.goban.create_oval(c[0],c[1],c[2],c[3], outline="blue", width=2))
+                o=self.goban.create_oval(c[0],c[1],c[2],c[3], outline="blue", width=2)
+                self.goban.tag_bind(o,"<Motion>",self.motionEvent(mw["hint"]))
+                newList.append(o)
 
         self.stones_figs[color]=newList
         root.update()
@@ -433,6 +482,12 @@ class go_board:
     def createFieldname (self, x, y):
         return ""+self.xToLetter(x)+str(self.boardsize-y)
     
+    def motionEvent(self, s) :
+        return lambda _ : self.onMotion (s)
+        
+    def onMotion(self,s) :
+        self.showInfoCallback(self.gtp2alpha(s[0])+s[1:])
+        
     def drawBoard (self) : 
         self.goban.delete("all")
         max=self.boardsize * self.linedist
@@ -452,6 +507,7 @@ class go_board:
                 self.coords_by_names[fieldname] = [x1,y1,x2,y2]
                 r=self.goban.create_rectangle (x1, y1, x2, y2, tags="fieldname" , outline="" , fill="")
                 self.goban.tag_bind(r,'<Button-1>',self.makeCliker(fieldname))
+                self.goban.tag_bind(r,'<Motion>',self.motionEvent(fieldname))
 
 # интерактив с энжином
 class GoEngine:
@@ -669,7 +725,9 @@ class gameInterface :
         self.btnScore=self.newBtn_1("Calc score", lambda _ : self.score() )
         self.goban.showInfoCallback=lambda i : self.showInfo(i)
         
+        self.btnStoreGame=self.newBtn_1("Save SGF", lambda _ : self.storeSgf() )
         self.btnStoreGame=self.newBtn_1("Store game", lambda _ : self.storeGame() )
+        self.btnStoreGame=self.newBtn_1("Restore game", lambda _ : self.restoreGame() )
         self.gameEnginePath="gnugo.exe --mode gtp"
         self.read_settings()
         self.engine=GoEngine()
@@ -722,18 +780,29 @@ class gameInterface :
         
     
     #сохранение игры
-    def storeGame(self):  
+    def storeSgf(self):
         for_sgf=[ x["sgf"] for x in self.goban.undo_stack ]
         fn= datetime.strftime(datetime.now(), "%m.%d.%Y_%H_%M")+".sgf"
         f = open(fn, 'w')
         s="("+"\n".join(for_sgf)+")"
         f.write(s)
         f.close()
-        
+    
+    # сохранение партии для последующего продолжения игры
+    def storeGame(self):
         s2=pickle.dumps(self.goban.undo_stack)
         f = open('my_picle.txt', 'w')
         f.write(s2)
         f.close()
+    
+    #сохранение игры
+    def restoreGame(self):
+        #s2=pickle.dumps(self.goban.undo_stack)
+        f = open('my_picle.txt', 'r')
+        s=f.read()
+        stack=pickle.loads(s)
+        f.close()
+        self.goban.replay(stack)
         
     def showInfo(self,i):
         self.lblInfo.config(text=i)
@@ -743,16 +812,8 @@ class gameInterface :
         self.showInfo("Score: "+s)
         
     def newGame(self):
-        if self.engine.running :
-            self.engine.quit()
-        self.engine.StartEngin(self.gameEnginePath)
         
-        #self.engine.StartEngin("leela080.exe --gtp")
-        #self.engine.StartEngin("gnugo.exe --mode gtp")
-        self.engine.time_by_move(7)
-        
-        self.engine.boardsize(self.boardsize)
-        self.engine.clear_board()
+        self.goban.gameEnginePath=self.gameEnginePath
         
         self.goban.boardsize=self.boardsize 
         self.goban.linedist=self.linedist
@@ -789,7 +850,8 @@ class UnicodeConfigParser(ConfigParser.RawConfigParser):
     # of the parameter's names. They will be saved 'as is'.
     def optionxform(self, strOut):
         return strOut
-         
+
+        
 root=Tk()
 style=Style()
 style.configure("TNotebook",  background="gray")
