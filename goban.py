@@ -5,6 +5,7 @@ from sys import exit as sysexit
 from os.path import splitext
 import os
 import pickle
+import json
 import copy
 from subprocess import *
 import time
@@ -190,7 +191,7 @@ class boardModel:
         
 ############### Сама доска - холст с нарисованной сеткой, обработчиком событий клик-а 
 class go_board:
-    def __init__(self, root, linedist, boardsize, engine):
+    def __init__(self, root, linedist, boardsize):
         # удивительно, но протокол GTP почему-то пропустил букво I????? но так почему-то работает ......
         self.GTP_LETTERS=['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T']
         self.undo_stack=[]  # Стэк для отката ходов
@@ -200,7 +201,10 @@ class go_board:
         self.stones_figs["black"]=[]
         self.stones_figs["white"]=[]
         self.coords_by_names={} #координаты узлов для прорисовки овалов
-        self.engine=engine     #объект дляобщения с енжином
+        self.engine=GoEngine()     #объект дляобщения с енжином - игроком
+        self.consult_engine=GoEngine()     #объект дляобщения с енжином - консалтером
+        self.engine.name="gamer bot"
+        self.consult_engine.name="consulter"
         self.gobansize = linedist * (boardsize + 1) #размер доски
         self.linedist=linedist #шаг сетки
         self.boardsize=boardsize # логический размер поля
@@ -218,7 +222,7 @@ class go_board:
         
     def gtp2alpha(self,s): return self.toSGF(s+"1")[0]
     
-    def gtp2cmnt(self,s): return self.toSGF(s)[0]+s[1:]
+    def gtp2cmnt(self,s): return s #self.toSGF(s)[0]+s[1:]
 
     # приведение координатных обозначений GTP->SGF
     def toSGF(self,s):
@@ -242,6 +246,7 @@ class go_board:
         handi_info={}
         party_info={}
         party_info["gameEnginePath"]=self.gameEnginePath
+        party_info["consultEnginePath"]=self.consultEnginePath
         
         # в первый узел добавим информацию о партии. Чтобы при восстановлении все это накатить
         party_info["boardsize"]=self.boardsize
@@ -265,6 +270,7 @@ class go_board:
             for i in blacklist :
                 sgf=sgf+"["+self.toSGF(i)+"]"
                 bm.doMove("black",i)
+                self.consult_engine.play("black",i)
             # и передадим ход белым
         else:
             sgf=sgf+"PL[B]RU[Japanese]"
@@ -279,6 +285,7 @@ class go_board:
             u["white"]="PASS"
             wh=self.engine.genmove("white")
             bm.doMove("white",wh)
+            self.consult_engine.play("white",wh)
             handi_info["white"]=wh
             party_info["handicap"]=handi_info
             sgf=sgf+";W["+self.toSGF(wh)+"]"
@@ -297,14 +304,19 @@ class go_board:
         self.showHint()
         self.redrawStones()
     
+    # на старте игры перезапускаем оба движка
     def runEngin(self) :
-        if self.engine.running :
-            self.engine.quit()
-        self.engine.StartEngin(self.gameEnginePath)
-        self.engine.boardsize(self.boardsize)
+        self.run1Engin(self.engine,self.gameEnginePath)
+        self.run1Engin(self.consult_engine,self.consultEnginePath)
+        
+    def run1Engin(self,e,p) :
+        if e.running :
+            e.quit()
+        e.StartEngin(p)
+        e.boardsize(self.boardsize)
         #self.engine.StartEngin("leela080.exe --gtp")
         #self.engine.StartEngin("gnugo.exe --mode gtp")
-        self.engine.time_by_move(7)
+        e.time_by_move(7)
     
     def replay(self, stack) :
         self.stones_figs["black"]=[]
@@ -315,6 +327,7 @@ class go_board:
         
         self.boardsize=party_info["boardsize"]
         self.gameEnginePath=party_info["gameEnginePath"]
+        self.consultEnginePath=party_info["consultEnginePath"]
         self.hintRithm=party_info["hintRithm"]
         self.runEngin()
         
@@ -324,15 +337,21 @@ class go_board:
             #todo по идее гандикап надо бы продавливать командами "установить свободный" и "разместить камни свободного"
             for i in blacklist :
                 self.engine.play("black",i)
+                self.consult_engine.play("black",i)
+                
             self.engine.play("white",handi_info["white"])
+            self.consult_engine.play("white",handi_info["white"])
+        
         for j in range(1,len(self.undo_stack)):
             bl_m=self.undo_stack[j]["black"]
             if bl_m!="PASS" and bl_m!="RESIGN":
                 self.engine.play("black",bl_m)
+                self.consult_engine.play("black",bl_m)
                 
             wh_m=self.undo_stack[j]["white"]
             if wh_m!="PASS" and wh_m!="RESIGN":
                 self.engine.play("white",wh_m)
+                self.consult_engine.play("white",wh_m)
         self.redrawStones()
             
         
@@ -365,19 +384,23 @@ class go_board:
             self.genHint()
             
     def genHint(self):
-        hint=self.engine.genmove("black")
+        hint=self.consult_engine.genmove("black")
         if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
-            self.engine.undo()
+            self.consult_engine.undo()
             self.addCommentCallback("Hint: "+self.gtp2cmnt(hint))
             self.top_move()["hint"]=hint
-            
+
+    
     def gobanClicker(self, s) :
         bm=self.top_move()["model"]
         if not bm.movePossible("black",s) :
             tkMessageBox.showinfo("Error move", "Error move")
             return
         was_hint= self.top_move().has_key("hint") #Ход сделан с подсказкой
+        
         self.engine.play("black",s)
+        self.consult_engine.play("black",s)
+        
         bm=bm.clone()
         
         bm.doMove("black",s)
@@ -391,6 +414,7 @@ class go_board:
         mv_info["white"]=self.top_move()["white"] #пока  нужно это хотя по сути, камни все равно с доски
         self.undo_stack.append(mv_info)
         self.redrawStones()
+        #генерируем ход игрового энжина 
         wh=self.engine.genmove("white")
         mv_info["white"]=wh
         sgf=";B["+self.toSGF(s)+"]"
@@ -399,6 +423,9 @@ class go_board:
         if (wh!="PASS") and (wh!="RESIGN") :
             sgf=sgf+";W["+self.toSGF(wh)+"]"
             bm.doMove("white",wh)
+            #и переносим на консалтинговый
+            self.consult_engine.play("white",wh)
+        
         else:
             sgf=sgf+";W[]"
         
@@ -411,8 +438,12 @@ class go_board:
         oldm=self.undo_stack.pop()
         
         #todo тут бы еще реду стэк организовать и и для сгф тоже, дабы создавать ветки партий
-        if (oldm["black"]!="PASS") : self.engine.undo()
-        if (oldm["white"]!="PASS") and (oldm["white"]!="RESIGN") : self.engine.undo()
+        if (oldm["black"]!="PASS") : 
+            self.engine.undo()
+            self.consult_engine.undo()
+        if (oldm["white"]!="PASS") and (oldm["white"]!="RESIGN") : 
+            self.engine.undo()
+            self.consult_engine.undo()
         self.redrawStones()
         
     #сделать ход за игрока    
@@ -431,6 +462,7 @@ class go_board:
         mv_info["white"]=wh
         if (wh!="PASS") and (wh!="RESIGN"):
             bm.doMove("white",wh)
+            self.consult_engine.play("white",wh)
             sgf=";B[];W["+self.toSGF(wh)+"]"
         else:
             sgf=";B[];W[]"
@@ -531,9 +563,10 @@ class GoEngine:
     def __init__(self):
         self._gtpnr = 1
         self.running=False
+        self.name=""
      
     def StartEngin(self,cmd):
-        print ("starting "+cmd)
+        print (self.name+" starting "+cmd)
         # GnuGo через Popen работает. Leela - нет. даже с задержкой.
         p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE, stderr=PIPE)
         
@@ -553,7 +586,7 @@ class GoEngine:
         verbose = True
         cmd = str(self._gtpnr) + " " + command
         if verbose:
-            print (cmd)
+            print (self.name+" "+cmd)
             sys.stdout.flush()
         self.to_gnugo.write(cmd + "\n")
         self.to_gnugo.flush()
@@ -586,7 +619,7 @@ class GoEngine:
             
         #assert(self.from_gnugo.read(1) == "\n")
         if verbose:
-            print (value)
+            print (self.name+" "+value)
         #retval=value[1 + len(str(self._gtpnr)):]
         retval=value
         #todo - тут надо бы вылавливать ошибки хотя бы так
@@ -667,6 +700,11 @@ class optDialog :
         self.entGameEngine=Entry(self.w,textvariable=self.gameEnginePath)
         self.entGameEngine.pack(side="top", padx=5, pady=5)
         
+        hlabel=Label(self.w,text="  Consult engine  ")        
+        self.consultEnginePath=StringVar()
+        self.entConsultEngine=Entry(self.w,textvariable=self.consultEnginePath)
+        self.entConsultEngine.pack(side="top", padx=5, pady=5)
+        
         self.okBtn=Button(self.w,text="OK")
         self.okBtn.bind("<Button-1>",lambda _ : self.doOk() )
         self.okBtn.pack(side="top", padx=5, pady=5 )
@@ -685,7 +723,8 @@ class optDialog :
         self.handicap.set(params["handicap"])
         self.hintRithm.set( params["hintrithm"])
         self.gameEnginePath.set(params["gameengine"])
-        print params["gameengine"]
+        self.consultEnginePath.set(params["consultengine"])
+        
 
         self.w.wait_window()
         if self.is_ok:
@@ -693,6 +732,7 @@ class optDialog :
             params["handicap"]=self.handicap.get()
             params["hintrithm"]=self.hintRithm.get()
             params["gameengine"]=self.gameEnginePath.get()
+            params["consultengine"]=self.consultEnginePath.get()
             print params["gameengine"]
 
 class gameInterface :
@@ -710,7 +750,7 @@ class gameInterface :
         self.root=root
         self.linedist= 20
         self.boardsize= 19
-        self.engine=GoEngine()
+        #self.engine=GoEngine()
         
         self.canvasFrame=Frame(root)
         self.canvasFrame.pack( side="left", fill="y")
@@ -735,7 +775,10 @@ class gameInterface :
         self.btnUndo=self.newBtn_1("Undo", lambda _ : self.goban.undo() )
         self.btnHelp=self.newBtn_1("Help", lambda _ : self.goban.help() )
                 
-        self.goban=go_board(self.canvasFrame,self.linedist, self.boardsize, self.engine)
+        self.goban=go_board(self.canvasFrame,self.linedist, self.boardsize)
+        self.engine=self.goban.engine
+        self.consult_engine=self.goban.consult_engine
+        
         self.goban.goban.pack(side="top", padx=5, pady=5 )
         self.lblInfo=Label(self.canvasFrame,text=" ")
         self.lblInfo.pack(side="top", padx=5, pady=5)
@@ -759,8 +802,9 @@ class gameInterface :
         self.btnStoreGame=self.newBtn_1("Store game", lambda _ : self.storeGame() )
         self.btnStoreGame=self.newBtn_1("Restore game", lambda _ : self.restoreGame() )
         self.gameEnginePath="gnugo.exe --mode gtp"
+        self.consultEnginePath="gnugo.exe --mode gtp"
         self.read_settings()
-        self.engine=GoEngine()
+        
     
     # - для коллбэков по комментариям - взять, выставить, добавить
     def GetComment(self):
@@ -777,6 +821,7 @@ class gameInterface :
         p["hintrithm"]=self.hintRithm
         p["handicap"]=self.handicap
         p["gameengine"]=self.gameEnginePath
+        p["consultengine"]=self.consultEnginePath
         
         f=optDialog(self.root)
         f.ShowModal(p)
@@ -784,6 +829,7 @@ class gameInterface :
         self.handicap=p["handicap"]
         self.hintRithm=p["hintrithm"]
         self.gameEnginePath=p["gameengine"] 
+        self.consultEnginePath=p["consultengine"]
         self.store_settings()
         
     # читаем файл настроек
@@ -793,6 +839,7 @@ class gameInterface :
         self.handicap=""
         self.hintRithm = "y"
         self.gameEnginePath="gnugo.exe --mode gtp"
+        self.consultEnginePath="gnugo.exe --mode gtp"
         
         cp=ConfigParser.SafeConfigParser()
         if os.path.exists("settings.ini") :
@@ -803,6 +850,7 @@ class gameInterface :
                 if name=="handicap" : self.handicap=(value)
                 if name=="hintrithm" : self.hintRithm=(value)
                 if name=="gameengineeath" : self.gameEnginePath=(value)
+                if name=="consultengineeath" : self.consultEnginePath=(value)
     
     # пишем файл настроек
     def store_settings(self):
@@ -812,6 +860,7 @@ class gameInterface :
         cp.set("settings","handicap",self.handicap)
         cp.set("settings","hintrithm",self.hintRithm)
         cp.set("settings","gameengineeath",self.gameEnginePath)
+        cp.set("settings","consultengineeath",self.consultEnginePath)
         confFile = codecs.open('settings.ini', 'w', 'utf-8')
         cp.write (confFile)
         confFile.close()
@@ -819,27 +868,34 @@ class gameInterface :
     
     #сохранение игры
     def storeSgf(self):
-        for_sgf=[ x["sgf"] for x in self.goban.undo_stack ]
+        for_sgf=[ x["sgf"]  for x in self.goban.undo_stack ]
         fn= datetime.strftime(datetime.now(), "%m.%d.%Y_%H_%M")+".sgf"
         s="("+"\n".join(for_sgf)+")"
         with codecs.open(fn,"w",encoding="utf-8") as f:
             f.write(s)
-            f.close()
-    
+            
     # сохранение партии для последующего продолжения игры
+    def storeGameJ(self):
+        with codecs.open('my_picle.txt', mode='w', encoding='utf-8') as f:
+            json.dump(self.goban.undo_stack,f)
+    
+    #сохранение игры
+    def restoreGameJ(self):
+        with codecs.open('my_picle.txt', mode='r', encoding='utf-8') as f:
+            stack=json.loads(f)
+        self.goban.replay(stack)
+        
     def storeGame(self):
         s2=pickle.dumps(self.goban.undo_stack)
-        f = open('my_picle.txt', 'w')
-        f.write(s2)
-        f.close()
-    
+        with open('my_picle.txt', 'w') as f:
+            f.write(s2)
+        
     #сохранение игры
     def restoreGame(self):
         #s2=pickle.dumps(self.goban.undo_stack)
-        f = open('my_picle.txt', 'r')
-        s=f.read()
+        with open('my_picle.txt', 'r') as f:
+            s=f.read()
         stack=pickle.loads(s)
-        f.close()
         self.goban.replay(stack)
         
     def showInfo(self,i):
@@ -852,12 +908,11 @@ class gameInterface :
     def newGame(self):
         
         self.goban.gameEnginePath=self.gameEnginePath
+        self.goban.consultEnginePath=self.consultEnginePath
         
         self.goban.boardsize=self.boardsize 
         self.goban.linedist=self.linedist
         self.goban.hintRithm=self.hintRithm
-        self.goban.engine=self.engine
-        
         self.goban.drawBoard()
         
         self.goban.handicap=self.handicap
@@ -904,4 +959,5 @@ gi=gameInterface(root)
 gi.newGame()
 root.mainloop()
 
-gi.engine.quit()
+gi.goban.engine.quit()
+gi.goban.consult_engine.quit()
