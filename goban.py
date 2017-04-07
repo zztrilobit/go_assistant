@@ -250,6 +250,7 @@ class go_board:
         
         # в первый узел добавим информацию о партии. Чтобы при восстановлении все это накатить
         party_info["boardsize"]=self.boardsize
+        party_info["timeByMove"]=self.timeByMove
         party_info["komi"]=0
         party_info["hintRithm"]=self.hintRithm
         
@@ -316,7 +317,7 @@ class go_board:
         e.boardsize(self.boardsize)
         #self.engine.StartEngin("leela080.exe --gtp")
         #self.engine.StartEngin("gnugo.exe --mode gtp")
-        e.time_by_move(7)
+        e.time_by_move(self.timeByMove)
     
     def replay(self, stack) :
         self.stones_figs["black"]=[]
@@ -329,6 +330,7 @@ class go_board:
         self.gameEnginePath=party_info["gameEnginePath"]
         self.consultEnginePath=party_info["consultEnginePath"]
         self.hintRithm=party_info["hintRithm"]
+        self.timeByMove=party_info["timeByMove"]
         self.runEngin()
         
         if party_info.has_key("handicap") :
@@ -384,10 +386,9 @@ class go_board:
             self.genHint()
             
     def genHint(self):
-        hint=self.consult_engine.genmove("black")
+        hint=self.consult_engine.ask_move("black")
+        self.addCommentCallback("Hint: "+self.gtp2cmnt(hint))
         if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
-            self.consult_engine.undo()
-            self.addCommentCallback("Hint: "+self.gtp2cmnt(hint))
             self.top_move()["hint"]=hint
 
     
@@ -577,6 +578,7 @@ class GoEngine:
         #self.to_gnugo, self.from_gnugo = os.popen2(cmd)
         #self.from_gnugo, self.to_gnugo = popen2.popen2(cmd)
         self.running=True
+        self.list_commands=self.gtp('list_commands').upper().strip().split()
     
     def gtp(self, command):
         if not self.running : 
@@ -628,15 +630,28 @@ class GoEngine:
             print ("gtp error!!! "+retval)
         self._gtpnr += 1
         return retval
-        
+    
+    # попросить подсказку
+    def ask_move(self,color) :
+        # команда поддерживается
+        if "REG_GENMOVE" in self.list_commands :
+            return self.gtp("reg_genmove {0}".format(color)).upper().strip()
+        else :
+            res=self.genmove(color)
+            if res!="PASS" and res!="RESIGN" : self.undo()
+            return res
+            
     def time_by_move(self, seconds) :
         # всю партию машина играет в режиме байоми, по нужному числу секунд на ход
-        return self.gtp("time_settings 1 "+str(seconds)+" 1")
+        return self.gtp("time_settings 1 {0} 1".format(seconds))
         
     def handicap(self, stones) :
         s=self.gtp("fixed_handicap "+str(stones))
-        return s.upper().strip().split()
-        
+        # у fuego команда не возвращает список камней
+        if s.strip()!="" :
+            return s.upper().strip().split()
+        else: return self.list_stones("black")
+
     def boardsize(self, size):
         return self.gtp('boardsize {0}'.format(size)).strip()
     
@@ -693,7 +708,13 @@ class optDialog :
         self.hintRithm=StringVar()
         self.entHintRithm=Entry(self.w,textvariable=self.hintRithm)
         self.entHintRithm.pack(side="top", padx=5, pady=5)
-
+        
+        hlabel=Label(self.w,text="  Time by move  ")        
+        hlabel.pack(side="top", padx=5, pady=5 )
+        self.timeByMove=StringVar()
+        self.entTimeByMove=Entry(self.w,textvariable=self.timeByMove)
+        self.entTimeByMove.pack(side="top", padx=5, pady=5)
+        
         hlabel=Label(self.w,text="  Game engine  ")        
         hlabel.pack(side="top", padx=5, pady=5 )
         self.gameEnginePath=StringVar()
@@ -710,6 +731,7 @@ class optDialog :
         self.okBtn.pack(side="top", padx=5, pady=5 )
         self.is_ok=False
         
+        
     def doOk(self):
         self.w.destroy()
         self.is_ok=True
@@ -724,6 +746,7 @@ class optDialog :
         self.hintRithm.set( params["hintrithm"])
         self.gameEnginePath.set(params["gameengine"])
         self.consultEnginePath.set(params["consultengine"])
+        self.timeByMove.set(params["timeByMove"])
         
 
         self.w.wait_window()
@@ -733,7 +756,8 @@ class optDialog :
             params["hintrithm"]=self.hintRithm.get()
             params["gameengine"]=self.gameEnginePath.get()
             params["consultengine"]=self.consultEnginePath.get()
-            print params["gameengine"]
+            params["timeByMove"]=self.timeByMove.get()
+            
 
 class gameInterface :
     #кнопка на фрейм кнопок, вертикально
@@ -822,6 +846,7 @@ class gameInterface :
         p["handicap"]=self.handicap
         p["gameengine"]=self.gameEnginePath
         p["consultengine"]=self.consultEnginePath
+        p["timeByMove"]=self.timeByMove       
         
         f=optDialog(self.root)
         f.ShowModal(p)
@@ -830,6 +855,7 @@ class gameInterface :
         self.hintRithm=p["hintrithm"]
         self.gameEnginePath=p["gameengine"] 
         self.consultEnginePath=p["consultengine"]
+        self.timeByMove=p["timeByMove"]
         self.store_settings()
         
     # читаем файл настроек
@@ -840,6 +866,7 @@ class gameInterface :
         self.hintRithm = "y"
         self.gameEnginePath="gnugo.exe --mode gtp"
         self.consultEnginePath="gnugo.exe --mode gtp"
+        self.timeByMove=7
         
         cp=ConfigParser.SafeConfigParser()
         if os.path.exists("settings.ini") :
@@ -851,6 +878,7 @@ class gameInterface :
                 if name=="hintrithm" : self.hintRithm=(value)
                 if name=="gameengineeath" : self.gameEnginePath=(value)
                 if name=="consultengineeath" : self.consultEnginePath=(value)
+                if name=="timebymove" : self.timeByMove=(value)
     
     # пишем файл настроек
     def store_settings(self):
@@ -869,7 +897,7 @@ class gameInterface :
     #сохранение игры
     def storeSgf(self):
         for_sgf=[ x["sgf"]  for x in self.goban.undo_stack ]
-        fn= datetime.strftime(datetime.now(), "%m.%d.%Y_%H_%M")+".sgf"
+        fn= datetime.strftime(datetime.now(), "%d.%m.%Y_%H_%M")+".sgf"
         s="("+"\n".join(for_sgf)+")"
         with codecs.open(fn,"w",encoding="utf-8") as f:
             f.write(s)
@@ -916,6 +944,7 @@ class gameInterface :
         self.goban.drawBoard()
         
         self.goban.handicap=self.handicap
+        self.goban.timeByMove=self.timeByMove
         self.goban.newGame()
 
 #https://habrahabr.ru/post/119405/        
