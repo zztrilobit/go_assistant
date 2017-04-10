@@ -12,6 +12,7 @@ import time
 import ConfigParser
 import codecs
 from datetime import datetime
+#from fcntl import fcntl, F_GETFL, F_SETFL
 
 ## модель игры - расчет содержимого доски после цепочки ходов
 class boardModel:
@@ -253,6 +254,7 @@ class go_board:
         party_info["timeByMove"]=self.timeByMove
         party_info["komi"]=0
         party_info["hintRithm"]=self.hintRithm
+        party_info["useConsult"]=self.useConsult
         
         #доска
         bm=boardModel(self.boardsize)
@@ -271,7 +273,7 @@ class go_board:
             for i in blacklist :
                 sgf=sgf+"["+self.toSGF(i)+"]"
                 bm.doMove("black",i)
-                self.consult_engine.play("black",i)
+                self.consultPlay("black",i)
             # и передадим ход белым
         else:
             sgf=sgf+"PL[B]RU[Japanese]"
@@ -286,7 +288,7 @@ class go_board:
             u["white"]="PASS"
             wh=self.engine.genmove("white")
             bm.doMove("white",wh)
-            self.consult_engine.play("white",wh)
+            self.consultPlay("white",wh)
             handi_info["white"]=wh
             party_info["handicap"]=handi_info
             sgf=sgf+";W["+self.toSGF(wh)+"]"
@@ -308,7 +310,8 @@ class go_board:
     # на старте игры перезапускаем оба движка
     def runEngin(self) :
         self.run1Engin(self.engine,self.gameEnginePath)
-        self.run1Engin(self.consult_engine,self.consultEnginePath)
+        if self.useConsult:
+            self.run1Engin(self.consult_engine,self.consultEnginePath)
         
     def run1Engin(self,e,p) :
         if e.running :
@@ -331,6 +334,7 @@ class go_board:
         self.consultEnginePath=party_info["consultEnginePath"]
         self.hintRithm=party_info["hintRithm"]
         self.timeByMove=party_info["timeByMove"]
+        self.useConsult=party_info["useConsult"]
         self.runEngin()
         
         if party_info.has_key("handicap") :
@@ -339,21 +343,21 @@ class go_board:
             #todo по идее гандикап надо бы продавливать командами "установить свободный" и "разместить камни свободного"
             for i in blacklist :
                 self.engine.play("black",i)
-                self.consult_engine.play("black",i)
+                self.consultPlay("black",i)
                 
             self.engine.play("white",handi_info["white"])
-            self.consult_engine.play("white",handi_info["white"])
+            self.consultPlay("white",handi_info["white"])
         
         for j in range(1,len(self.undo_stack)):
             bl_m=self.undo_stack[j]["black"]
             if bl_m!="PASS" and bl_m!="RESIGN":
                 self.engine.play("black",bl_m)
-                self.consult_engine.play("black",bl_m)
+                self.consultPlay("black",bl_m)
                 
             wh_m=self.undo_stack[j]["white"]
             if wh_m!="PASS" and wh_m!="RESIGN":
                 self.engine.play("white",wh_m)
-                self.consult_engine.play("white",wh_m)
+                self.consultPlay("white",wh_m)
         self.redrawStones()
             
         
@@ -386,12 +390,19 @@ class go_board:
             self.genHint()
             
     def genHint(self):
-        hint=self.consult_engine.ask_move("black")
+        if self.useConsult:
+            hint=self.consult_engine.ask_move("black")
+        else:
+            hint=self.engine.ask_move("black")
+            
         self.addCommentCallback("Hint: "+self.gtp2cmnt(hint))
         if ( hint!="PASS" ) and ( hint!= "RESIGN" ) :
             self.top_move()["hint"]=hint
 
-    
+    def consultPlay(self, color, point):
+        if self.useConsult:
+            self.consult_engine.play(color, point)
+            
     def gobanClicker(self, s) :
         bm=self.top_move()["model"]
         if not bm.movePossible("black",s) :
@@ -400,7 +411,7 @@ class go_board:
         was_hint= self.top_move().has_key("hint") #Ход сделан с подсказкой
         
         self.engine.play("black",s)
-        self.consult_engine.play("black",s)
+        self.consultPlay("black",s)
         
         bm=bm.clone()
         
@@ -425,7 +436,7 @@ class go_board:
             sgf=sgf+";W["+self.toSGF(wh)+"]"
             bm.doMove("white",wh)
             #и переносим на консалтинговый
-            self.consult_engine.play("white",wh)
+            self.consultPlay("white",wh)
         
         else:
             sgf=sgf+";W[]"
@@ -435,16 +446,19 @@ class go_board:
         self.redrawStones()
         mv_info["sgf"]=sgf
     
+    def consultUndo(self) :
+        if self.useConsult: self.consult_engine.undo()
+        
     def undo(self):
         oldm=self.undo_stack.pop()
         
         #todo тут бы еще реду стэк организовать и и для сгф тоже, дабы создавать ветки партий
         if (oldm["black"]!="PASS") : 
             self.engine.undo()
-            self.consult_engine.undo()
+            self.consultUndo()
         if (oldm["white"]!="PASS") and (oldm["white"]!="RESIGN") : 
             self.engine.undo()
-            self.consult_engine.undo()
+            self.consultUndo()
         self.redrawStones()
         
     #сделать ход за игрока    
@@ -463,7 +477,7 @@ class go_board:
         mv_info["white"]=wh
         if (wh!="PASS") and (wh!="RESIGN"):
             bm.doMove("white",wh)
-            self.consult_engine.play("white",wh)
+            self.consultPlay("white",wh)
             sgf=";B[];W["+self.toSGF(wh)+"]"
         else:
             sgf=";B[];W[]"
@@ -569,7 +583,15 @@ class GoEngine:
     def StartEngin(self,cmd):
         print (self.name+" starting "+cmd)
         # GnuGo через Popen работает. Leela - нет. даже с задержкой.
-        p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        #p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+        p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE)
+        
+        # для винды такого модуля нет. нужно или перенаправлять стандартный вывод в NULL
+        #  или терпеть его на экране ................
+        # self.gg_err=p.stderr
+        # стандартный вывод переведем в режим неблокирующего чтения
+        #flags=fcntl(p.stderr,F_GETFL)
+        #fcntl(p.stderr, F_SETFL, flags | O_NONBLOCK)
         
         self.to_gnugo=p.stdin
         self.from_gnugo=p.stdout
@@ -580,6 +602,17 @@ class GoEngine:
         self.running=True
         self.list_commands=self.gtp('list_commands').upper().strip().split()
     
+    def read_stderr(self):
+        #читаем из stderr пока читается. и выбрасываем на помойку
+        # пока не реализовано
+        return
+        done = False
+        while not done: 
+            try :
+                self.gg_err.read(1)
+            except:
+                done= False
+        
     def gtp(self, command):
         if not self.running : 
             # raise BasicError("OOOOPS..... NO GTP ENGINE!!!!")
@@ -594,10 +627,14 @@ class GoEngine:
         self.to_gnugo.flush()
         
         #ждем начало ответа - "=" - окей "?" - ошибка
+        self.read_stderr()
+        
         status = self.from_gnugo.read(1)
         while status!="=" and status!="?" :
             status = self.from_gnugo.read(1)
         self.is_ok=status=="="
+        
+        self.read_stderr()
         
         #ждем id команды
         value = self.from_gnugo.read(1)
@@ -609,6 +646,8 @@ class GoEngine:
         is_break=False
         status = self.from_gnugo.read(1)
         
+        self.read_stderr()
+        
         # ждем двух переводов строки
         while not (is_break and status=="\n" ):
             if status!="\r":
@@ -618,7 +657,9 @@ class GoEngine:
             else :
                 value +=" "
             status = self.from_gnugo.read(1)
-            
+        
+        self.read_stderr()
+                
         #assert(self.from_gnugo.read(1) == "\n")
         if verbose:
             print (self.name+" "+value)
@@ -687,7 +728,11 @@ class GoEngine:
 # форма с настройками игры
 class optDialog :
     def __init__(self,root):
-        self.w=Toplevel(root)
+        self.ww=Toplevel(root)
+        self.w=Frame(self.ww)
+        self.w.pack(side="left",fill="y")
+        self.w2=Frame(self.ww)
+        self.w2.pack(side="left",fill="y")
         hlabel=Label(self.w,text="  Board size  ")
         hlabel.pack(side="top", padx=5, pady=5 )
         
@@ -715,18 +760,22 @@ class optDialog :
         self.entTimeByMove=Entry(self.w,textvariable=self.timeByMove)
         self.entTimeByMove.pack(side="top", padx=5, pady=5)
         
-        hlabel=Label(self.w,text="  Game engine  ")        
+        hlabel=Label(self.w2,text="  Game engine  ")        
         hlabel.pack(side="top", padx=5, pady=5 )
         self.gameEnginePath=StringVar()
-        self.entGameEngine=Entry(self.w,textvariable=self.gameEnginePath)
+        self.entGameEngine=Entry(self.w2,textvariable=self.gameEnginePath)
         self.entGameEngine.pack(side="top", padx=5, pady=5)
         
-        hlabel=Label(self.w,text="  Consult engine  ")        
+        self.useConsult=IntVar()
+        self.cbUseConsult=Checkbutton(self.w2,variable=self.useConsult,text="Use consult")
+        self.cbUseConsult.pack(side="top", padx=5, pady=5)
+
+        hlabel=Label(self.w2,text="  Consult engine  ")        
         self.consultEnginePath=StringVar()
-        self.entConsultEngine=Entry(self.w,textvariable=self.consultEnginePath)
+        self.entConsultEngine=Entry(self.w2,textvariable=self.consultEnginePath)
         self.entConsultEngine.pack(side="top", padx=5, pady=5)
         
-        self.okBtn=Button(self.w,text="OK")
+        self.okBtn=Button(self.w2,text="OK")
         self.okBtn.bind("<Button-1>",lambda _ : self.doOk() )
         self.okBtn.pack(side="top", padx=5, pady=5 )
         self.is_ok=False
@@ -738,8 +787,8 @@ class optDialog :
         
     def ShowModal(self, params):
         self.is_ok=False
-        self.w.grab_set()
-        self.w.focus_set()
+        self.ww.grab_set()
+        self.ww.focus_set()
         
         self.gridSize.set(params["boardsize"])
         self.handicap.set(params["handicap"])
@@ -747,15 +796,18 @@ class optDialog :
         self.gameEnginePath.set(params["gameengine"])
         self.consultEnginePath.set(params["consultengine"])
         self.timeByMove.set(params["timeByMove"])
+        self.useConsult.set(params["useconsult"])
+        self.useConsult.set(params["useconsult"])
         
 
-        self.w.wait_window()
+        self.ww.wait_window()
         if self.is_ok:
             params["boardsize"]=int(self.gridSize.get())
             params["handicap"]=self.handicap.get()
             params["hintrithm"]=self.hintRithm.get()
             params["gameengine"]=self.gameEnginePath.get()
             params["consultengine"]=self.consultEnginePath.get()
+            params["useconsult"]=self.useConsult.get()
             params["timeByMove"]=self.timeByMove.get()
             
 
@@ -847,6 +899,7 @@ class gameInterface :
         p["gameengine"]=self.gameEnginePath
         p["consultengine"]=self.consultEnginePath
         p["timeByMove"]=self.timeByMove       
+        p["useconsult"]=self.useConsult       
         
         f=optDialog(self.root)
         f.ShowModal(p)
@@ -856,6 +909,7 @@ class gameInterface :
         self.gameEnginePath=p["gameengine"] 
         self.consultEnginePath=p["consultengine"]
         self.timeByMove=p["timeByMove"]
+        self.useConsult=p["useconsult"]
         self.store_settings()
         
     # читаем файл настроек
@@ -867,6 +921,7 @@ class gameInterface :
         self.gameEnginePath="gnugo.exe --mode gtp"
         self.consultEnginePath="gnugo.exe --mode gtp"
         self.timeByMove=7
+        self.useConsult=0
         
         cp=ConfigParser.SafeConfigParser()
         if os.path.exists("settings.ini") :
@@ -879,6 +934,7 @@ class gameInterface :
                 if name=="gameengineeath" : self.gameEnginePath=(value)
                 if name=="consultengineeath" : self.consultEnginePath=(value)
                 if name=="timebymove" : self.timeByMove=(value)
+                if name=="useconsult" : self.useConsult=int(value)
     
     # пишем файл настроек
     def store_settings(self):
@@ -889,6 +945,8 @@ class gameInterface :
         cp.set("settings","hintrithm",self.hintRithm)
         cp.set("settings","gameengineeath",self.gameEnginePath)
         cp.set("settings","consultengineeath",self.consultEnginePath)
+        cp.set("settings","useconsult",self.useConsult)
+        cp.set("settings","timebymove",self.timeByMove)
         confFile = codecs.open('settings.ini', 'w', 'utf-8')
         cp.write (confFile)
         confFile.close()
@@ -945,6 +1003,7 @@ class gameInterface :
         
         self.goban.handicap=self.handicap
         self.goban.timeByMove=self.timeByMove
+        self.goban.useConsult=self.useConsult
         self.goban.newGame()
 
 #https://habrahabr.ru/post/119405/        
