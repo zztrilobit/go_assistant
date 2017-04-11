@@ -12,7 +12,9 @@ import time
 import ConfigParser
 import codecs
 from datetime import datetime
-#from fcntl import fcntl, F_GETFL, F_SETFL
+import threading
+from Queue import Queue, Empty
+
 
 ## модель игры - расчет содержимого доски после цепочки ходов
 class boardModel:
@@ -318,8 +320,6 @@ class go_board:
             e.quit()
         e.StartEngin(p)
         e.boardsize(self.boardsize)
-        #self.engine.StartEngin("leela080.exe --gtp")
-        #self.engine.StartEngin("gnugo.exe --mode gtp")
         e.time_by_move(self.timeByMove)
     
     def replay(self, stack) :
@@ -573,6 +573,20 @@ class go_board:
                 self.goban.tag_bind(r,'<Motion>',self.motionEvent(fieldname))
                 self.goban.tag_bind(r,'<Button-3>',self.rightClickEvent(fieldname))
 
+# пылесос для данных из stderr
+class BlackHole(threading.Thread):
+    def __init__(self,pipe):
+        threading.Thread.__init__(self)
+        self.pipe=pipe
+        # мешок для пыли
+        self.q=Queue()
+        self.daemon=True
+    
+    def run(self):
+        for line in iter(self.pipe.readline, b''):
+            self.q.put(line)
+            
+            
 # интерактив с энжином
 class GoEngine:
     def __init__(self):
@@ -584,34 +598,18 @@ class GoEngine:
         print (self.name+" starting "+cmd)
         # GnuGo через Popen работает. Leela - нет. даже с задержкой.
         #p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-        p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE)
-        
-        # для винды такого модуля нет. нужно или перенаправлять стандартный вывод в NULL
-        #  или терпеть его на экране ................
-        # self.gg_err=p.stderr
-        # стандартный вывод переведем в режим неблокирующего чтения
-        #flags=fcntl(p.stderr,F_GETFL)
-        #fcntl(p.stderr, F_SETFL, flags | O_NONBLOCK)
+        p=Popen(cmd, bufsize=-1, stdin=PIPE, stdout=PIPE, stderr=PIPE)
         
         self.to_gnugo=p.stdin
         self.from_gnugo=p.stdout
         self.process=p
-        #time.sleep(10)
-        #self.to_gnugo, self.from_gnugo = os.popen2(cmd)
-        #self.from_gnugo, self.to_gnugo = popen2.popen2(cmd)
+        
         self.running=True
+        self.err_reader=BlackHole(p.stderr)
+        self.err_reader.start()
+        
         self.list_commands=self.gtp('list_commands').upper().strip().split()
-    
-    def read_stderr(self):
-        #читаем из stderr пока читается. и выбрасываем на помойку
-        # пока не реализовано
-        return
-        done = False
-        while not done: 
-            try :
-                self.gg_err.read(1)
-            except:
-                done= False
+        
         
     def gtp(self, command):
         if not self.running : 
@@ -627,14 +625,10 @@ class GoEngine:
         self.to_gnugo.flush()
         
         #ждем начало ответа - "=" - окей "?" - ошибка
-        self.read_stderr()
-        
         status = self.from_gnugo.read(1)
         while status!="=" and status!="?" :
             status = self.from_gnugo.read(1)
         self.is_ok=status=="="
-        
-        self.read_stderr()
         
         #ждем id команды
         value = self.from_gnugo.read(1)
@@ -646,8 +640,6 @@ class GoEngine:
         is_break=False
         status = self.from_gnugo.read(1)
         
-        self.read_stderr()
-        
         # ждем двух переводов строки
         while not (is_break and status=="\n" ):
             if status!="\r":
@@ -658,8 +650,6 @@ class GoEngine:
                 value +=" "
             status = self.from_gnugo.read(1)
         
-        self.read_stderr()
-                
         #assert(self.from_gnugo.read(1) == "\n")
         if verbose:
             print (self.name+" "+value)
@@ -782,7 +772,7 @@ class optDialog :
         
         
     def doOk(self):
-        self.w.destroy()
+        self.ww.destroy()
         self.is_ok=True
         
     def ShowModal(self, params):
@@ -959,7 +949,8 @@ class gameInterface :
         s="("+"\n".join(for_sgf)+")"
         with codecs.open(fn,"w",encoding="utf-8") as f:
             f.write(s)
-            
+        tkMessageBox.showinfo("Game saved", fn)
+    
     # сохранение партии для последующего продолжения игры
     def storeGameJ(self):
         with codecs.open('my_picle.txt', mode='w', encoding='utf-8') as f:
